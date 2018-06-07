@@ -1,0 +1,154 @@
+<!-- Copyright (c) 2018 Arvīds Kokins -->
+<!DOCTYPE html>
+<html>
+	<head>
+	</head>
+	<body>
+		<canvas id="c" width="512" height="512" />
+		<script type="text/javascript">
+const c = document.getElementById("c")
+const ctx = c.getContext("2d")
+
+const W = 32
+const H = 32
+const S = 16
+const walls = new Array(W * H)
+const generated = new Array(W * H)
+
+for (var i = 0; i < W * H; ++i)
+	walls[i] = 0
+
+for (var y = 8; y < 15; ++y)
+	for (var x = 5; x < 8; ++x)
+		walls[x + W * y] = 1
+
+for (var y = 11; y < 20; ++y)
+	for (var x = 22; x < 24; ++x)
+		walls[x + W * y] = 1
+
+for (var y = 25; y < 27; ++y)
+	for (var x = 9; x < 21; ++x)
+		walls[x + W * y] = 1
+
+for (var y = 10; y < 21; ++y)
+	for (var x = 13; x < 17; ++x)
+		walls[x + W * y] = 2
+
+function recalc()
+{
+	const proc = new Array(W * H)
+	var src = []
+	for (var y = 10; y < 21; ++y)
+	{
+		for (var x = 13; x < 17; ++x)
+		{
+			if (walls[x + W * y] == 2)
+			{
+				src.push([x, y, x, y])
+				proc[x + W * y] = 1
+				generated[x + W * y] = 1
+			}
+			else if (walls[x + W * y] == 1)
+				generated[x + W * y] = -1
+			else
+				generated[x + W * y] = 0
+		}
+	}
+	var dst = []
+	while (src.length)
+	{
+		for (var i = 0; i < src.length; ++i)
+		{
+			var sp = src[i]
+			var x = sp[0], y = sp[1], tx = sp[2], ty = sp[3]
+			if (!generated[x + W * y])
+			{
+				var dx = x == tx ? 0 : x < tx ? 1 : -1
+				var dy = y == ty ? 0 : y < ty ? 1 : -1
+				var s = generated[x + dx + W * (y + dy)]
+				if (s == -1 || walls[x + W * y] == 1)
+					generated[x + W * y] = -1
+				else
+					generated[x + W * y] = s + 1
+			}
+			if (x > 0 && !proc[x - 1 + W * y])
+			{
+				proc[x - 1 + W * y] = true
+				dst.push([x - 1, y, tx, ty])
+			}
+			if (y > 0 && !proc[x + W * (y - 1)])
+			{
+				proc[x + W * (y - 1)] = true
+				dst.push([x, y - 1, tx, ty])
+			}
+			if (x < W - 1 && !proc[x + 1 + W * y])
+			{
+				proc[x + 1 + W * y] = true
+				dst.push([x + 1, y, tx, ty])
+			}
+			if (y < H - 1 && !proc[x + W * (y + 1)])
+			{
+				proc[x + W * (y + 1)] = true
+				dst.push([x, y + 1, tx, ty])
+			}
+		}
+		src.length = 0
+		var tmp = src
+		src = dst
+		dst = tmp
+	}
+}
+
+function redraw()
+{
+	ctx.clearRect(0, 0, 512, 512)
+	ctx.beginPath()
+	ctx.fillStyle = "rgb(0,0,0)"
+	for (var y = 0; y < H; ++y)
+	{
+		for (var x = 0; x < W; ++x)
+		{
+			if (walls[x + y * W] == 1)
+				ctx.fillRect(x * S, y * S, S, S)
+		}
+	}
+	ctx.beginPath()
+	for (var y = 0; y < H; ++y)
+	{
+		for (var x = 0; x < W; ++x)
+		{
+			var s = generated[x + y * W]
+			if (s > 0)
+			{
+				ctx.fillStyle = "rgb(" + (50 + s * 3) + ",50,50)"
+				ctx.fillRect(x * S, y * S, S, S)
+			}
+		}
+	}
+	ctx.beginPath()
+	ctx.fillStyle = "rgb(50,200,0)"
+	for (var y = 0; y < H; ++y)
+	{
+		for (var x = 0; x < W; ++x)
+		{
+			if (walls[x + y * W] == 2)
+				ctx.fillRect(x * S, y * S, S, S)
+		}
+	}
+	ctx.beginPath()
+	for (var y = 0; y < H; ++y)
+	{
+		for (var x = 0; x < W; ++x)
+		{
+			ctx.rect(x * S, y * S, S, S)
+		}
+	}
+	ctx.strokeStyle = "rgba(127,127,127,0.5)"
+	ctx.stroke()
+}
+
+recalc()
+redraw()
+		</script>
+	</body>
+</html>
