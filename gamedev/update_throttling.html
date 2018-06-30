@@ -211,8 +211,8 @@ Simulation.prototype.draw = function(id, range)
 			ctx.strokeStyle = over ? "#C10" : "#1C0"
 			ctx.beginPath()
 		}
-		ctx.moveTo(i, el.height)
-		ctx.lineTo(i, lerp(el.height, 0, this.histogram[i] / range))
+		ctx.moveTo(i + 0.5, el.height)
+		ctx.lineTo(i + 0.5, lerp(el.height, 0, this.histogram[i] / range))
 	}
 	ctx.stroke()
 
