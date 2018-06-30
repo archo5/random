@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<style type="text/css">
+html { font-family: sans-serif; }
+table { border-collapse: collapse; border-spacing: 0; display: inline-table; }
+th, td { border: 1px solid #CCC; padding: 8px; }
+canvas { background: linear-gradient(to bottom, #ffffff 0%,#f6f6f6 100%); border: 1px solid #CCC; }
+note { font-size: 80%; width: 600px; display: block; }
+	</style>
+</head>
+<body>
+	<h1>Throttling execution of object updates</h1>
+	<p>
+		Sometimes it's fine to run object updates less often. There are different ways to do that.
+	</p>
+	<table>
+		<tr><th>Method</th><th>Performance histogram</th></tr>
+		<tr>
+			<td rowspan="2">Update all every frame:</td>
+			<td><canvas id="ex1" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>This is the initial solution, which often leads to performance issues, which is when all the other solutions are considered.</note></td></tr>
+
+		<tr>
+			<td rowspan="2">Fixed period (0.2s):</td>
+			<td><canvas id="ex2" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>This clearly doesn't work. Just setting a period doesn't stop the objects from running updates synchronously.</note></td></tr>
+
+		<tr>
+			<td rowspan="2">Fixed period (0.4s):</td>
+			<td><canvas id="ex3" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>Same problem as above.</note></td></tr>
+
+		<tr>
+			<td rowspan="2">Random period (0.2-0.4s):</td>
+			<td><canvas id="ex4" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>This works better already but is prone to occasional stutters and an uneven experience in general.</note></td></tr>
+
+	</table>
+
+	<table>
+		<tr><th>Method</th><th>Performance histogram</th></tr>
+		<tr>
+			<td rowspan="2">Run 10 per frame:</td>
+			<td><canvas id="ex5" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>This is perfectly even, however now we lose control of the object update frequency.
+			While this is totally fine for some cases (such as LOD updates), when some responsiveness guarantees should be made, this doesn't do the job.</note></td></tr>
+
+		<tr>
+			<td rowspan="2">Tick up to first 10<br/>[period(0.2s) - timeSinceLast]:</td>
+			<td><canvas id="ex6" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>This is quite even for the most part, though the opposite of stutter may occur.</note></td></tr>
+
+		<tr>
+			<td rowspan="2">Tick up to first 10<br/>[period(0.2-0.4s) - timeSinceLast]:</td>
+			<td><canvas id="ex7" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>A combination of the previous technique and period randomization. This is a somewhat reliable solution.</note></td></tr>
+
+		<tr>
+			<td rowspan="2">Tick up to first N (adaptive)<br/>[period(0.2-0.4s) - timeSinceLast]:</td>
+			<td><canvas id="ex8" width="600" height="80" /></td>
+		</tr>
+		<tr><td><note>Adjusting the number of maximum object updates according to previous frames works great to minimize performance issues.</note></td></tr>
+
+	</table>
+
+	<script type="text/javascript">
+
+function time()
+{
+	return +Date.now() / 1000
+}
+
+function lerp(a, b, s)
+{
+	return a * (1 - s) + b * s
+}
+
+var tickInfo = { time: 0, prevTime: time() }
+
+function GameObject(period)
+{
+	this.period = period
+	this.lastTickTime = 0
+}
+GameObject.prototype.tick = function(sim)
+{
+	// pretend to do work here
+	tickInfo.time += 0.4
+
+	// this can later be used to determine if ticking is needed
+	this.lastTickTime = sim.time
+}
+
+function Simulation(periodfunc)
+{
+	this.objects = []
+	for (var i = 0; i < 100; ++i)
+	{
+		this.objects.push(new GameObject(periodfunc()))
+	}
+
+	this.histogram = []
+
+	// for periodic ticks
+	this.time = 0
+
+	// for N ticks
+	this.which = 0
+
+	// for adaptive N
+	this.accumN = 1
+}
+
+Simulation.prototype.addTickTime = function()
+{
+	while (this.histogram.length > 600)
+		this.histogram.shift()
+	this.histogram.push(tickInfo.time)
+
+	// reset for next measurement
+	tickInfo.time = 0
+}
+
+Simulation.prototype.tickAll = function(dt)
+{
+	this.time += dt
+
+	for (var i = 0; i < this.objects.length; ++i)
+		this.objects[i].tick(this)
+
+	this.addTickTime()
+}
+
+Simulation.prototype.tickPeriodic = function(dt)
+{
+	this.time += dt
+
+	for (var i = 0; i < this.objects.length; ++i)
+		if (this.time - this.objects[i].lastTickTime > this.objects[i].period)
+			this.objects[i].tick(this)
+
+	this.addTickTime()
+}
+
+Simulation.prototype.tickN = function(dt, n)
+{
+	this.time += dt
+
+	for (var i = 0; i < n; ++i)
+		this.objects[this.which++ % this.objects.length].tick(this)
+
+	this.which %= this.objects.length
+
+	this.addTickTime()
+}
+
+Simulation.prototype.tickPrio = function(dt, n)
+{
+	var t = this.time += dt
+
+	var objects = this.objects.slice()
+	objects.sort((o) => o.period - (t - o.lastTickTime))
+
+	for (var i = 0; i < Math.min(n, objects.length) && t - objects[i].lastTickTime > objects[i].period; ++i)
+		objects[i].tick(this)
+
+	this.addTickTime()
+}
+
+Simulation.prototype.tickPrioAdj = function(dt, n)
+{
+	var t = this.time += dt
+
+	var objects = this.objects.slice()
+	objects.sort((o) => o.period - (t - o.lastTickTime))
+
+	var numReq = 0
+	for (var i = 0; i < Math.min(n, objects.length) && t - objects[i].lastTickTime > objects[i].period; ++i)
+		numReq++
+	this.accumN += (numReq - this.accumN) * 0.02
+
+	for (var i = 0; i < Math.min(Math.floor(this.accumN), objects.length) && t - objects[i].lastTickTime > objects[i].period; ++i)
+		objects[i].tick(this)
+
+	this.addTickTime()
+}
+
+Simulation.prototype.draw = function(id, range)
+{
+	el = document.getElementById(id)
+	ctx = el.getContext("2d")
+	ctx.clearRect(0, 0, el.width, el.height)
+
+	var over = false
+	ctx.strokeStyle = "#1C0"
+	ctx.beginPath()
+	for (var i = 0; i < this.histogram.length; ++i)
+	{
+		if (this.histogram[i] > 5 != over)
+		{
+			over = this.histogram[i] > 5
+			ctx.stroke()
+			ctx.strokeStyle = over ? "#C10" : "#1C0"
+			ctx.beginPath()
+		}
+		ctx.moveTo(i, el.height)
+		ctx.lineTo(i, lerp(el.height, 0, this.histogram[i] / range))
+	}
+	ctx.stroke()
+
+	ctx.strokeStyle = "#fa1"
+	ctx.beginPath()
+	ctx.moveTo(0, Math.round(lerp(el.height, 0, 5 / range)) + 0.5)
+	ctx.lineTo(el.width, Math.round(lerp(el.height, 0, 5 / range)) + 0.5)
+	ctx.stroke()
+
+	ctx.font = "10px sans-serif"
+	ctx.fillText("^ " + range + "ms", 0, 10)
+	ctx.fillText("5ms budget", 0, lerp(el.height, 0, 5 / range))
+}
+
+var sim1 = new Simulation(() => 0)
+var sim2 = new Simulation(() => 0.2)
+var sim3 = new Simulation(() => 0.4)
+var sim4 = new Simulation(() => Math.random() * 0.2 + 0.2)
+var sim5 = new Simulation(() => 0)
+var sim6 = new Simulation(() => 0.2)
+var sim7 = new Simulation(() => Math.random() * 0.2 + 0.2)
+var sim8 = new Simulation(() => Math.random() * 0.2 + 0.2)
+
+function tick()
+{
+	var t = time()
+	var dt = t - tickInfo.prevTime
+	tickInfo.prevTime = t
+	if (dt > 1/30)
+		dt = 1/30
+
+	sim1.tickAll(dt)
+	sim2.tickPeriodic(dt)
+	sim3.tickPeriodic(dt)
+	sim4.tickPeriodic(dt)
+	sim5.tickN(dt, 10)
+	sim6.tickPrio(dt, 10)
+	sim7.tickPrio(dt, 10)
+	sim8.tickPrioAdj(dt, 10)
+}
+setInterval(tick, 16)
+
+function redraw()
+{
+	sim1.draw("ex1", 50)
+	sim2.draw("ex2", 50)
+	sim3.draw("ex3", 50)
+	sim4.draw("ex4", 15)
+	sim5.draw("ex5", 15)
+	sim6.draw("ex6", 15)
+	sim7.draw("ex7", 15)
+	sim8.draw("ex8", 15)
+	window.requestAnimationFrame(redraw)
+}
+
+window.requestAnimationFrame(redraw)
+	</script>
+</body>
+</html>
