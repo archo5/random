@@ -3,6 +3,7 @@
 #include <string.h>
 #include <vector>
 #include <typeinfo>
+#include <sstream>
 #include <initializer_list>
 
 
@@ -29,6 +30,15 @@ struct BTCond : BTSubItem
 	bool (*_cond) ();
 };
 
+template <class T>
+struct BTAttr
+{
+	BTAttr(const T& v) : _value(v) {}
+
+	T _value;
+	const char* _varName = nullptr;
+};
+
 struct BTParamAny : BTSubItem
 {
 	BTParamAny(const char* name) : _name(name) {}
@@ -36,6 +46,14 @@ struct BTParamAny : BTSubItem
 	virtual const char* GetTypeName() = 0;
 	
 	const char* _name;
+};
+
+struct BTParamVar : BTParamAny
+{
+	BTParamVar(const char* name, const char* varName) : BTParamAny(name), _varName(varName) {}
+	const char* GetTypeName() { return "<var>"; }
+
+	const char* _varName;
 };
 
 template<class T>
@@ -52,13 +70,38 @@ struct BTNode : BTSubItem
 {
 	virtual ~BTNode() {}
 	virtual const char* GetName() = 0;
+
+	virtual void DumpAttribs() {}
+	template <class T>
+	static void _DumpAttrib(const char* name, const BTAttr<T>& attr)
+	{
+		printf(" [%s=", name);
+		if (attr._varName)
+			printf(":%s", attr._varName);
+		else
+		{
+			stringstream ss;
+			ss << attr._value;
+			printf("%s", ss.str().c_str());
+		}
+		printf("]");
+	}
+#define BT_ADUMP(x) _DumpAttrib(#x, x)
+
 	virtual void Dump(int level)
 	{
-		lev(level); printf("%s%s\n", GetName(), _cond ? " [cond]" : "");
-		lev(level++); puts("{");
-		for (auto ch : children)
-			ch->Dump(level);
-		lev(--level); puts("}");
+		lev(level); printf("%s", GetName());
+		if (_cond)
+			printf(" [cond]");
+		DumpAttribs();
+		puts("");
+		if (!children.empty())
+		{
+			lev(level++); puts("{");
+			for (auto ch : children)
+				ch->Dump(level);
+			lev(--level); puts("}");
+		}
 	}
 	virtual void ProcessSubItems(initializer_list<BTSubItem*> items)
 	{
@@ -118,17 +161,21 @@ struct BTTaskEcho : BTTask
 	void OnTick() override { printf("[%s] tick\n", _message); }
 	void Dump(int level) override
 	{
-		lev(level); printf("echo [%s]\n", _message);
+		lev(level); printf("echo \"%s\"\n", _message);
 	}
 	
 	const char* _message = "?";
 };
 
-template <class T> void TryParse(BTParamAny* p, const char* nm, T& out)
+template <class T> void TryParse(BTParamAny* p, const char* nm, BTAttr<T>& out)
 {
 	if (strcmp(p->_name, nm))
 	{
-		//printf("failed to parse %s\n", nm);
+		return;
+	}
+	if (auto* v = dynamic_cast<BTParamVar*>(p))
+	{
+		out._varName = v->_varName;
 		return;
 	}
 	if (auto* tp = dynamic_cast<BTParamT<T>*>(p))
@@ -144,15 +191,22 @@ struct BTTaskMoveTo : BTTask
 	void ProcessSubItems(initializer_list<BTSubItem*> items) override
 	{
 		for (auto& item : items)
+		{
 			if (auto* p = dynamic_cast<BTParamAny*>(item))
+			{
 				TryParse(p, "someVal", someVal);
+				TryParse(p, "someInt", someInt);
+			}
+		}
 	}
-	void Dump(int level) override
+	void DumpAttribs() override
 	{
-		lev(level); printf("MoveTo(someVal=%g)\n", someVal);
+		BT_ADUMP(someVal);
+		BT_ADUMP(someInt);
 	}
 	
-	float someVal = 1.0f;
+	BTAttr<float> someVal = 1.0f;
+	BTAttr<int> someInt = 5;
 };
 
 struct BTTree
@@ -183,7 +237,7 @@ BTTree testTree
 			BTN<BTTaskMoveTo>
 			{
 				BTParam("someVal", 3.5f),
-				BTParam("someVal", 5),
+				BTParamVar("someInt", "thaVar"),
 			},
 			new BTTaskEcho("idle..."),
 		},
