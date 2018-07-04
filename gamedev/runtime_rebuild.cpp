@@ -15,7 +15,7 @@ struct incrementor
 	}
 	~incrementor()
 	{
-		puts("[dll inc dtor");
+		puts("[dll] inc dtor");
 	}
 	int inc()
 	{
@@ -51,11 +51,33 @@ void compile()
 	puts("[app] compile done");
 }
 
+void copy()
+{
+	char bfr[300];
+	sprintf(bfr, "%s.%d.dll", __FILE__, GetCurrentProcessId());
+
+	printf("[app] copying file %s.dll to %s\n", __FILE__, bfr);
+
+	CopyFile(__FILE__ ".dll", bfr, FALSE);
+}
+
+void delcopy()
+{
+	char bfr[300];
+	sprintf(bfr, "%s.%d.dll", __FILE__, GetCurrentProcessId());
+
+	printf("[app] deleting %s...\n", bfr);
+
+	DeleteFileA(bfr);
+}
+
 void load()
 {
 	puts("[app] loading DLL...");
 
-	dll = LoadLibraryA(__FILE__ ".dll");
+	char bfr[300];
+	sprintf(bfr, "%s.%d.dll", __FILE__, GetCurrentProcessId());
+	dll = LoadLibraryA(bfr);
 
 	printf("[app] DLL loading %s\n", dll ? "done" : "failed");
 
@@ -74,6 +96,7 @@ void unload()
 int main()
 {
 	compile();
+	copy();
 	load();
 
 	char ch;
@@ -81,8 +104,9 @@ int main()
 	{
 		if (ch == 'r')
 		{
-			unload();
 			compile();
+			unload();
+			copy();
 			load();
 		}
 		else if (ch == 'i')
@@ -95,6 +119,7 @@ int main()
 	}
 
 	unload();
+	delcopy();
 }
 
 #endif
