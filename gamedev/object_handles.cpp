@@ -257,7 +257,7 @@ struct PagePool
 	void* _nextFreeBlock = nullptr;
 };
 
-// Original method
+// Original method (or forgotten sources)
 struct Storage_WeakRefs
 {
 	static constexpr const char* NAME = "WeakRefs";

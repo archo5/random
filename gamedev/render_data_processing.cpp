@@ -554,6 +554,128 @@ int V4Method::nRuns;
 
 
 
+// ██╗   ██╗███████╗
+// ██║   ██║██╔════╝
+// ██║   ██║███████╗
+// ╚██╗ ██╔╝╚════██║
+//  ╚████╔╝ ███████║
+//   ╚═══╝  ╚══════╝
+//                  
+// v2 -> inline DrawItems
+// !! LIMITATION: max. 4 DrawItems per mesh instance
+struct V5Method : Method
+{
+	struct MIDrawItems
+	{
+		uint16_t parts[4];
+		uint8_t types[4];
+		uint8_t count;
+	};
+	struct Sortable
+	{
+		uint64_t key;
+		uint32_t mii;
+		uint16_t part;
+	};
+
+	void AddMeshInstance(const AABB& bbox, DrawItemInfo* drawitems, int numdrawitems)
+	{
+		miBB.push_back(bbox);
+		miDI.emplace_back();
+		MIDrawItems& DI = miDI.back();
+		DI.count = numdrawitems;
+		for (int i = 0; i < numdrawitems; ++i)
+		{
+			DI.parts[i] = drawitems[i].part;
+			DI.types[i] = drawitems[i].type;
+		}
+	}
+	void Process(const AABB& camBox, uint8_t typemask)
+	{
+		culled.reserve(miBB.size());
+		culled.clear();
+
+		double t0 = Time();
+
+		uint32_t mii = 0;
+		for ( ; mii < miBB.size(); ++mii)
+		{
+			if (AABBIntersect(miBB[mii], camBox))
+			{
+				auto& DI = miDI[mii];
+				for (uint8_t i = 0; i < DI.count; ++i)
+				{
+					if ((1 << DI.types[i]) & typemask)
+						culled.push_back({ (uint64_t(DI.types[i]) << 63) | (uint64_t(DI.parts[i]) << 32) | mii, mii, DI.parts[i] });
+				}
+			}
+		}
+
+		double t1 = Time();
+		tCull += t1 - t0;
+
+		TRadixSort<uint64_t>(culled.data(), culled.data() + culled.size(), [](const Sortable& s) { return s.key; });
+
+		double t2 = Time();
+		tSort += t2 - t1;
+
+		drawn.reserve(culled.size());
+		drawn.clear();
+
+		double t3 = Time();
+
+		for (auto& s : culled)
+			drawn.push_back({ s.mii, s.part });
+
+		double t4 = Time();
+		tMove += t4 - t3;
+		nRuns++;
+
+		//printf("processed %u mesh insts, culled to %u draw items\n", mii, (int) drawn.size());
+	}
+
+	vector<AABB> miBB;
+	vector<MIDrawItems> miDI;
+	vector<Sortable> culled;
+
+	static double tCull;
+	static double tSort;
+	static double tMove;
+	static int nRuns;
+};
+double V5Method::tCull;
+double V5Method::tSort;
+double V5Method::tMove;
+int V5Method::nRuns;
+
+
+
+template<class MethodT, int NumIters> void RunTestM(const char* name, MethodT& m)
+{
+	m.Fill();
+	auto t0 = Time();
+	for (int i = 0; i < NumIters; ++i)
+	{
+		m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1);
+		m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1 | 0x2);
+	}
+	auto t1 = Time();
+	printf("%8s: %.4f ms (cull: %.4f, sort:%.4f, move:%.4f)\n",
+		name,
+		(t1 - t0) * 1000 / (NumIters * 2),
+		1000 * MethodT::tCull / MethodT::nRuns,
+		1000 * MethodT::tSort / MethodT::nRuns,
+		1000 * MethodT::tMove / MethodT::nRuns);
+}
+template<class MethodT, int NumIters> void RunTest(const char* name, const vector<DrawItemID>& refDrawn)
+{
+	MethodT m;
+	RunTestM<MethodT, NumIters>(name, m);
+	compareDrawItems(refDrawn, m.drawn);
+}
+
+
+
 int main()
 {
 	puts("### Methods for processing of rendering data ###\n"
@@ -564,78 +686,12 @@ int main()
 	vector<DrawItemID> refDrawn;
 	{
 		BaselineMethod m;
-		m.Fill();
-		auto t0 = Time();
-		for (int i = 0; i < NUMITERS; ++i)
-		{
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1);
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1 | 0x2);
-		}
-		auto t1 = Time();
-		printf("%8s: %.4f ms (cull: %.4f, sort:%.4f, move:%.4f)\n",
-			"baseline",
-			(t1 - t0) * 1000 / (NUMITERS * 2),
-			1000 * BaselineMethod::tCull / BaselineMethod::nRuns,
-			1000 * BaselineMethod::tSort / BaselineMethod::nRuns,
-			1000 * BaselineMethod::tMove / BaselineMethod::nRuns);
+		RunTestM<BaselineMethod, NUMITERS>("baseline", m);
 		refDrawn = m.drawn;
 	}
 
-	{
-		V2Method m;
-		m.Fill();
-		auto t0 = Time();
-		for (int i = 0; i < NUMITERS; ++i)
-		{
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1);
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1 | 0x2);
-		}
-		auto t1 = Time();
-		printf("%8s: %.4f ms (cull: %.4f, sort:%.4f, move:%.4f)\n",
-			"v2",
-			(t1 - t0) * 1000 / (NUMITERS * 2),
-			1000 * V2Method::tCull / V2Method::nRuns,
-			1000 * V2Method::tSort / V2Method::nRuns,
-			1000 * V2Method::tMove / V2Method::nRuns);
-		compareDrawItems(refDrawn, m.drawn);
-	}
-
-	{
-		V3Method m;
-		m.Fill();
-		auto t0 = Time();
-		for (int i = 0; i < NUMITERS; ++i)
-		{
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1);
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1 | 0x2);
-		}
-		auto t1 = Time();
-		printf("%8s: %.4f ms (cull: %.4f, sort:%.4f, move:%.4f)\n",
-			"v3",
-			(t1 - t0) * 1000 / (NUMITERS * 2),
-			1000 * V3Method::tCull / V3Method::nRuns,
-			1000 * V3Method::tSort / V3Method::nRuns,
-			1000 * V3Method::tMove / V3Method::nRuns);
-		compareDrawItems(refDrawn, m.drawn);
-	}
-
-	{
-		V4Method m;
-		m.Fill();
-		auto t0 = Time();
-		for (int i = 0; i < NUMITERS; ++i)
-		{
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1);
-			m.Process({ { 3.5f, 4.1f, 2.2f }, { 19.8f, 18.3f, 19.9f } }, 0x1 | 0x2);
-		}
-		auto t1 = Time();
-		printf("%8s: %.4f ms (cull: %.4f, sort:%.4f, move:%.4f)\n",
-			"v4",
-			(t1 - t0) * 1000 / (NUMITERS * 2),
-			1000 * V4Method::tCull / V4Method::nRuns,
-			1000 * V4Method::tSort / V4Method::nRuns,
-			1000 * V4Method::tMove / V4Method::nRuns);
-		compareDrawItems(refDrawn, m.drawn);
-	}
-
+	RunTest<V2Method, NUMITERS>("v2", refDrawn);
+	RunTest<V3Method, NUMITERS>("v3", refDrawn);
+	RunTest<V4Method, NUMITERS>("v4", refDrawn);
+	RunTest<V5Method, NUMITERS>("v5", refDrawn);
 }
