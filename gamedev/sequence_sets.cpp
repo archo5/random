@@ -17,16 +17,22 @@ using namespace std;
 
 
 
-#define BOOL int
+typedef int BOOL;
+typedef uint16_t WORD;
+typedef uint32_t DWORD;
+typedef void* HANDLE;
 #define WINAPI __stdcall
 struct LARGE_INTEGER
 {
 	long long QuadPart;
 };
+#define STD_OUTPUT_HANDLE ((DWORD)-11)
 extern "C"
 {
 BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
 BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
+HANDLE WINAPI GetStdHandle(DWORD nStdHandle);
+BOOL WINAPI SetConsoleTextAttribute(HANDLE hConsoleOutput, WORD wAttributes);
 }
 double Time()
 {
@@ -44,6 +50,13 @@ void ERROR(const char* expr, const char* func, const char* file, int line)
 	exit(1);
 }
 #define ASSERT(x) if (!(x)) { ERROR(#x, __PRETTY_FUNCTION__, __FILE__, __LINE__); }
+
+
+
+uint64_t Proc(uint64_t v)
+{
+	return (v >> 1) * v + v * v * (v >> 2) + v;
+}
 
 
 
@@ -72,7 +85,7 @@ struct Set_CPPSet
 	{
 		uint64_t out = 0;
 		for (auto val : indices)
-			out += data[val];
+			out += Proc(data[val]);
 		return out;
 	}
 
@@ -105,7 +118,7 @@ struct Set_CPPUoSet
 	{
 		uint64_t out = 0;
 		for (auto val : indices)
-			out += data[val];
+			out += Proc(data[val]);
 		return out;
 	}
 
@@ -186,7 +199,7 @@ struct Set_CPPUoSet2
 		sortedIndices.assign(indices.begin(), indices.end());
 		TRadixSort<uint32_t>(sortedIndices.data(), sortedIndices.data() + sortedIndices.size());
 		for (auto val : sortedIndices)
-			out += data[val];
+			out += Proc(data[val]);
 		return out;
 	}
 
@@ -233,7 +246,7 @@ struct Set_SortedArray
 	{
 		uint64_t out = 0;
 		for (auto val : indices)
-			out += data[val];
+			out += Proc(data[val]);
 		return out;
 	}
 
@@ -282,7 +295,7 @@ struct Set_ArraySet
 	{
 		uint64_t out = 0;
 		for (auto val : indices)
-			out += data[val];
+			out += Proc(data[val]);
 		return out;
 	}
 
@@ -308,7 +321,7 @@ struct Set_SortArrSet : Set_ArraySet
 
 		uint64_t out = 0;
 		for (auto val : sortedIndices)
-			out += data[val];
+			out += Proc(data[val]);
 		return out;
 	}
 
@@ -320,7 +333,6 @@ struct Set_SortArrSet : Set_ArraySet
 struct Set_SparseArrSet
 {
 	static constexpr const char* NAME = "SparseArrSet";
-	const uint32_t INVALID_POS = (uint32_t) -1;
 
 	void Prewarm(size_t s)
 	{
@@ -349,9 +361,14 @@ struct Set_SparseArrSet
 	uint64_t ProcessData(uint64_t* data)
 	{
 		uint64_t out = 0;
-		for (size_t i = 0, which = 0; i < used.size() && which < count; ++i, ++which)
+		for (size_t i = 0, which = 0, num = used.size(); i < num && which < count; ++i)
+		{
 			if (used[i])
-				out += data[i];
+			{
+				out += Proc(data[i]);
+				which++;
+			}
+		}
 		return out;
 	}
 
@@ -361,12 +378,185 @@ struct Set_SparseArrSet
 
 
 
+template<int version>
+struct Set_SpArrBitSet
+{
+	static constexpr const char* NAME = version == 2 ? "SpArrBitSet2" : "SpArrBitSet1";
+
+	using BitUnit = uint64_t;
+	static constexpr int BITCOUNT = sizeof(BitUnit) * 8;
+	static constexpr uint32_t BITMASK = BITCOUNT - 1;
+	static constexpr int BITSHIFT = 6; // log2(64)
+
+	FINLINE uint32_t BitDivUp(uint32_t v)
+	{
+		return (v + BITMASK) >> BITSHIFT;
+	}
+	FINLINE bool BitGet(uint32_t v)
+	{
+		return (used[v >> BITSHIFT] & (1ULL << (v & BITMASK))) != 0;
+	}
+	FINLINE void BitSet(uint32_t v)
+	{
+		used[v >> BITSHIFT] |= 1ULL << (v & BITMASK);
+	}
+	FINLINE void BitClear(uint32_t v)
+	{
+		used[v >> BITSHIFT] &= ~(1ULL << (v & BITMASK));
+	}
+
+	void Prewarm(size_t s)
+	{
+		used.reserve(BitDivUp(s));
+	}
+	void Add(uint32_t v)
+	{
+		if (v >= used.size() * BITCOUNT)
+			used.resize(BitDivUp(v + 1 + used.size()), 0); // excessive resizing to avoid frequent resizing
+		else if (BitGet(v))
+			return;
+		BitSet(v);
+		count++;
+	}
+	void Remove(uint32_t v)
+	{
+		if (v >= used.size() * BITCOUNT || !BitGet(v))
+			return;
+		BitClear(v);
+		count--;
+	}
+	size_t Count()
+	{
+		return count;
+	}
+	uint64_t ProcessData(uint64_t* data)
+	{
+		uint64_t out = 0;
+		if (version == 2)
+		{
+			for (size_t chid = 0, which = 0; chid < used.size() && which < count; ++chid)
+			{
+				if (BitUnit bits = used[chid])
+				{
+					size_t base = chid << BITSHIFT;
+					uint64_t comp = 1;
+					for (size_t i = 0; i < 64; ++i, comp <<= 1)
+					{
+						if (bits & comp)
+						{
+							out += Proc(data[base + i]);
+							which++;
+						}
+					}
+				}
+			}
+		}
+		else if (version == 1)
+		{
+			for (size_t i = 0, which = 0, num = used.size() * BITCOUNT; i < num && which < count; ++i)
+			{
+				if (BitGet(i))
+				{
+					out += Proc(data[i]);
+					which++;
+				}
+			}
+		}
+		return out;
+	}
+
+	vector<BitUnit> used;
+	uint32_t count = 0;
+};
+
+
+
+struct Results
+{
+	struct Test
+	{
+		const char* name;
+		double numbers[5];
+	};
+
+	Results()
+	{
+		hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+	}
+	~Results()
+	{
+		Print();
+	}
+	void AddResult(const char* name, double a, double b, double c, double d, double e)
+	{
+		data.push_back({ name, { a, b, c, d, e }});
+	}
+	void Print()
+	{
+		double mins[5] = { 9999, 9999, 9999, 9999, 9999 };
+		double maxs[5] = { 0, 0, 0, 0, 0 };
+		double meds[5];
+
+		for (int i = 0; i < 5; ++i)
+		{
+			double vals[5];
+			int j = 0;
+			for (auto& t : data)
+			{
+				vals[j++] = t.numbers[i];
+				if (mins[i] > t.numbers[i])
+					mins[i] = t.numbers[i];
+				if (maxs[i] < t.numbers[i])
+					maxs[i] = t.numbers[i];
+			}
+			sort(vals, vals + 5);
+			meds[i] = vals[2];
+		}
+
+		for (auto& t : data)
+		{
+			printf("%12s:", t.name);
+			for (int i = 0; i < 5; ++i)
+			{
+				double up = maxs[i] - meds[i];
+				double dn = meds[i] - mins[i];
+				double mnd = up < dn ? up : dn;
+				double minv = meds[i] - mnd;
+				double maxv = meds[i] + mnd;
+				double q = minv == maxv ? 0.5 : (t.numbers[i] - minv) / (maxv - minv);
+				int col;
+				if (q < 0.1)
+					col = 10;
+				else if (q < 0.3)
+					col = 2;
+				else if (q > 0.9)
+					col = 12;
+				else if (q > 0.7)
+					col = 4;
+				else
+					col = 6;
+
+				printf("|");
+				fflush(stdout);
+				SetConsoleTextAttribute(hConsole, col);
+				printf("%9.4f", t.numbers[i]);
+				fflush(stdout);
+				SetConsoleTextAttribute(hConsole, 7);
+			}
+			puts("");
+		}
+	}
+
+	vector<Test> data;
+	HANDLE hConsole;
+};
+
 #define BPRED1 {if (rand() % 2) rand();}
 #define BPRED6 BPRED1 BPRED1 BPRED1 BPRED1 BPRED1 BPRED1
 #define BPRED36 BPRED6 BPRED6 BPRED6 BPRED6 BPRED6 BPRED6
 #define BPRED216 BPRED36 BPRED36 BPRED36 BPRED36 BPRED36 BPRED36
 
-template<class Set, int Count> void RunTests(uint32_t* indices, uint64_t* data)
+template<class Set, int Count> void RunTests(uint32_t* indices, uint64_t* values, Results& results, uint64_t ref)
 {
 	double t;
 	Set s;
@@ -385,9 +575,10 @@ template<class Set, int Count> void RunTests(uint32_t* indices, uint64_t* data)
 	BPRED216;BPRED216;
 
 	t = Time();
-	uint64_t val = s.ProcessData(data);
+	uint64_t val = s.ProcessData(values);
 	__asm__ __volatile__("" :: "m" (val));
 	double tProc = Time() - t;
+	ASSERT(val == ref);
 
 	t = Time();
 	for (int i = 0; i < Count; ++i)
@@ -407,7 +598,7 @@ template<class Set, int Count> void RunTests(uint32_t* indices, uint64_t* data)
 	double tRevRemove = Time() - t;
 	ASSERT(s.Count() == 0);
 
-	printf("%12s:|%9.4f|%9.4f|%9.4f|%9.4f|%9.4f\n",
+	results.AddResult(
 		Set::NAME
 		, tAdd * 1000
 		, tProc * 1000
@@ -417,10 +608,34 @@ template<class Set, int Count> void RunTests(uint32_t* indices, uint64_t* data)
 	);
 };
 
+template<int Count> void RunAllTests(uint32_t* indices, uint64_t* values, Results& results)
+{
+	uint64_t ref = 0;
+	for (int i = 0; i < Count; ++i)
+		ref += Proc(values[indices[i]]);
+
+	RunTests<Set_CPPSet, Count>(indices, values, results, ref);
+	RunTests<Set_CPPUoSet, Count>(indices, values, results, ref);
+	RunTests<Set_CPPUoSet2, Count>(indices, values, results, ref);
+	RunTests<Set_SortedArray, Count>(indices, values, results, ref);
+	RunTests<Set_ArraySet, Count>(indices, values, results, ref);
+	RunTests<Set_SortArrSet, Count>(indices, values, results, ref);
+	RunTests<Set_SparseArrSet, Count>(indices, values, results, ref);
+	RunTests<Set_SpArrBitSet<1>, Count>(indices, values, results, ref);
+	RunTests<Set_SpArrBitSet<2>, Count>(indices, values, results, ref);
+}
 
 
-#define COUNT 100000
-#define COUNT2 1000
+
+#define N1K 1000
+#define N10K 10000
+#define N100K 100000
+#define N1000K 1000000
+void iteminfo(int icount, int maxid)
+{
+	printf("item count: %d  max.item ID:%d  (%g%%)\n", icount, maxid, icount * 100.0 / maxid);
+	printf("%12s |%9s|%9s|%9s|%9s|%9s\n", "Method", "Add", "Process", "Remove", "AddAftRem", "RevRemove");
+}
 int main()
 {
 	puts("### Methods for storing arbitrary indexed subsets of array data ###");
@@ -429,39 +644,78 @@ int main()
 
 	vector<uint32_t> indices;
 	vector<uint64_t> values;
-	indices.resize(COUNT);
-	values.resize(COUNT);
-	for (int i = 0; i < COUNT; ++i)
+	indices.resize(N100K);
+	values.resize(N100K);
+	for (int i = 0; i < N100K; ++i)
 	{
 		indices[i] = i;
 		values[i] = (i * 101U) & 0xffffU;
 	}
 
-	std::random_device rd;
-	std::mt19937 g(rd());
-	std::shuffle(indices.begin(), indices.end(), g);
+	{
+		std::random_device rd;
+		std::mt19937 g(rd());
+		std::shuffle(indices.begin(), indices.end(), g);
+	}
 
-	printf("item count: %d\n", COUNT);
-	printf("%12s |%9s|%9s|%9s|%9s|%9s\n", "Method", "Add", "Process", "Remove", "AddAftRem", "RevRemove");
-	RunTests<Set_CPPSet, COUNT>(indices.data(), values.data());
-	RunTests<Set_CPPUoSet, COUNT>(indices.data(), values.data());
-	RunTests<Set_CPPUoSet2, COUNT>(indices.data(), values.data());
-	RunTests<Set_SortedArray, COUNT>(indices.data(), values.data());
-	RunTests<Set_ArraySet, COUNT>(indices.data(), values.data());
-	RunTests<Set_SortArrSet, COUNT>(indices.data(), values.data());
-	RunTests<Set_SparseArrSet, COUNT>(indices.data(), values.data());
+	iteminfo(N100K, N100K);
+	{
+		Results r;
+		RunAllTests<N100K>(indices.data(), values.data(), r);
+	}
 	puts("");
 
-	printf("item count: %d\n", COUNT2);
-	printf("%12s |%9s|%9s|%9s|%9s|%9s\n", "Method", "Add", "Process", "Remove", "AddAftRem", "RevRemove");
-	RunTests<Set_CPPSet, COUNT2>(indices.data(), values.data());
-	RunTests<Set_CPPUoSet, COUNT2>(indices.data(), values.data());
-	RunTests<Set_CPPUoSet2, COUNT2>(indices.data(), values.data());
-	RunTests<Set_SortedArray, COUNT2>(indices.data(), values.data());
-	RunTests<Set_ArraySet, COUNT2>(indices.data(), values.data());
-	RunTests<Set_SortArrSet, COUNT2>(indices.data(), values.data());
-	RunTests<Set_SparseArrSet, COUNT2>(indices.data(), values.data());
+	iteminfo(N10K, N100K);
+	{
+		Results r;
+		RunAllTests<N10K>(indices.data(), values.data(), r);
+	}
 	puts("");
+
+	iteminfo(N1K, N100K);
+	{
+		Results r;
+		RunAllTests<N1K>(indices.data(), values.data(), r);
+	}
+	puts("");
+
+	vector<uint32_t> indices0;
+	vector<uint64_t> values0;
+	indices0.resize(N100K);
+	values0.resize(N100K);
+	for (int i = 0; i < N100K; ++i)
+	{
+		indices0[i] = i;
+		values0[i] = (i * 101U) & 0xffffU;
+	}
+
+	{
+		std::random_device rd;
+		std::mt19937 g(rd());
+		std::shuffle(indices0.begin(), indices0.end(), g);
+	}
+
+	iteminfo(N100K, N1000K);
+	{
+		Results r;
+		RunAllTests<N100K>(indices0.data(), values0.data(), r);
+	}
+	puts("");
+
+	iteminfo(N10K, N1000K);
+	{
+		Results r;
+		RunAllTests<N10K>(indices0.data(), values0.data(), r);
+	}
+	puts("");
+
+	iteminfo(N1K, N1000K);
+	{
+		Results r;
+		RunAllTests<N1K>(indices0.data(), values0.data(), r);
+	}
+	puts("");
+
 }
 
 
