@@ -255,10 +255,93 @@ struct Set_SortedArray
 
 
 
+struct Set_SortChunkArr
+{
+	static constexpr const char* NAME = "SortChunkArr";
+	static constexpr uint8_t INVALID_POS = (uint8_t) -1;
+	// chunk should be a few cache lines big
+	static constexpr uint32_t CHUNKSIZE = 64;
+	static constexpr uint32_t CHUNKMASK = CHUNKSIZE - 1;
+	static constexpr uint32_t CHUNKINVMASK = ~CHUNKMASK;
+	static size_t ChunkRoundUp(size_t v)
+	{
+		return (v + CHUNKMASK) & CHUNKINVMASK;
+	}
+
+	void Prewarm(size_t s)
+	{
+		indexChunks.reserve(ChunkRoundUp(s));
+	}
+	void Add(uint32_t v)
+	{
+		uint32_t chunkStart = v & CHUNKINVMASK;
+		if (indexChunks.size() < chunkStart + CHUNKSIZE)
+			indexChunks.resize(indexChunks.size() + chunkStart + CHUNKSIZE, INVALID_POS);
+		auto* chunk = indexChunks.data() + chunkStart;
+		auto* chunkEnd = chunk + CHUNKSIZE;
+		uint8_t vd = v - chunkStart;
+		auto* pos = lower_bound(chunk, chunkEnd, vd);
+		if (*pos == vd)
+			return;
+		uint8_t bk = vd;
+		while (pos < chunkEnd)
+		{
+			uint8_t tmp = *pos;
+			*pos =  bk;
+			bk = tmp;
+			if (tmp == INVALID_POS)
+				break;
+			pos++;
+		}
+		count++;
+	}
+	void Remove(uint32_t v)
+	{
+		if (indexChunks.size() <= v)
+			return;
+		uint32_t chunkStart = v & CHUNKINVMASK;
+		auto* chunk = indexChunks.data() + chunkStart;
+		auto* chunkEnd = chunk + CHUNKSIZE;
+		uint8_t vd = v - chunkStart;
+		auto* pos = lower_bound(chunk, chunkEnd, vd);
+		if (*pos != vd)
+			return;
+		while (pos + 1 < chunkEnd)
+		{
+			pos[0] = pos[1];
+			pos++;
+		}
+		*pos = INVALID_POS;
+		count--;
+	}
+	size_t Count()
+	{
+		return count;
+	}
+	uint64_t ProcessData(uint64_t* data)
+	{
+		uint64_t out = 0;
+		for (size_t i = 0; i < indexChunks.size(); i += CHUNKSIZE)
+		{
+			for (size_t j = i, end = i + CHUNKSIZE; j < end && indexChunks[j] != INVALID_POS; ++j)
+			{
+				out += Proc(data[i + indexChunks[j]]);
+			}
+		}
+		return out;
+	}
+
+	vector<uint8_t> indexChunks;
+	uint32_t count = 0;
+};
+constexpr uint8_t Set_SortChunkArr::INVALID_POS;
+
+
+
 struct Set_ArraySet
 {
 	static constexpr const char* NAME = "ArraySet";
-	const uint32_t INVALID_POS = (uint32_t) -1;
+	static constexpr uint32_t INVALID_POS = (uint32_t) -1;
 
 	void Prewarm(size_t s)
 	{
@@ -302,6 +385,7 @@ struct Set_ArraySet
 	vector<uint32_t> indices;
 	vector<uint32_t> positions;
 };
+constexpr uint32_t Set_ArraySet::INVALID_POS;
 
 
 
@@ -545,6 +629,8 @@ struct Results
 			}
 			puts("");
 		}
+
+		data.clear();
 	}
 
 	vector<Test> data;
@@ -608,21 +694,25 @@ template<class Set, int Count> void RunTests(uint32_t* indices, uint64_t* values
 	);
 };
 
-template<int Count> void RunAllTests(uint32_t* indices, uint64_t* values, Results& results)
+template<int Count> void RunAllTests(uint32_t* indices, uint64_t* values)
 {
 	uint64_t ref = 0;
 	for (int i = 0; i < Count; ++i)
 		ref += Proc(values[indices[i]]);
 
+	Results results;
 	RunTests<Set_CPPSet, Count>(indices, values, results, ref);
 	RunTests<Set_CPPUoSet, Count>(indices, values, results, ref);
 	RunTests<Set_CPPUoSet2, Count>(indices, values, results, ref);
 	RunTests<Set_SortedArray, Count>(indices, values, results, ref);
+	RunTests<Set_SortChunkArr, Count>(indices, values, results, ref);
 	RunTests<Set_ArraySet, Count>(indices, values, results, ref);
-	RunTests<Set_SortArrSet, Count>(indices, values, results, ref);
+	// RunTests<Set_SortArrSet, Count>(indices, values, results, ref); -- TODO GCC currently crashes with 10 tests (wtf?)
 	RunTests<Set_SparseArrSet, Count>(indices, values, results, ref);
 	RunTests<Set_SpArrBitSet<1>, Count>(indices, values, results, ref);
 	RunTests<Set_SpArrBitSet<2>, Count>(indices, values, results, ref);
+	results.Print();
+	puts("");
 }
 
 
@@ -658,26 +748,14 @@ int main()
 		std::shuffle(indices.begin(), indices.end(), g);
 	}
 
-	iteminfo(N100K, N100K);
-	{
-		Results r;
-		RunAllTests<N100K>(indices.data(), values.data(), r);
-	}
-	puts("");
+	iteminfo(N1K, N100K);
+	RunAllTests<N1K>(indices.data(), values.data());
 
 	iteminfo(N10K, N100K);
-	{
-		Results r;
-		RunAllTests<N10K>(indices.data(), values.data(), r);
-	}
-	puts("");
+	RunAllTests<N10K>(indices.data(), values.data());
 
-	iteminfo(N1K, N100K);
-	{
-		Results r;
-		RunAllTests<N1K>(indices.data(), values.data(), r);
-	}
-	puts("");
+	iteminfo(N100K, N100K);
+	RunAllTests<N100K>(indices.data(), values.data());
 
 	vector<uint32_t> indices0;
 	vector<uint64_t> values0;
@@ -695,26 +773,14 @@ int main()
 		std::shuffle(indices0.begin(), indices0.end(), g);
 	}
 
-	iteminfo(N100K, N1000K);
-	{
-		Results r;
-		RunAllTests<N100K>(indices0.data(), values0.data(), r);
-	}
-	puts("");
+	iteminfo(N1K, N1000K);
+	RunAllTests<N1K>(indices0.data(), values0.data());
 
 	iteminfo(N10K, N1000K);
-	{
-		Results r;
-		RunAllTests<N10K>(indices0.data(), values0.data(), r);
-	}
-	puts("");
+	RunAllTests<N10K>(indices0.data(), values0.data());
 
-	iteminfo(N1K, N1000K);
-	{
-		Results r;
-		RunAllTests<N1K>(indices0.data(), values0.data(), r);
-	}
-	puts("");
+	iteminfo(N100K, N1000K);
+	RunAllTests<N100K>(indices0.data(), values0.data());
 
 }
 
