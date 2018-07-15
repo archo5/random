@@ -13,7 +13,13 @@ using namespace std;
 
 
 
-#define FINLINE inline __attribute__((always_inline))
+#ifdef _MSC_VER
+#  define FINLINE __forceinline
+#  define NOINLINE __declspec(noinline)
+#else
+#  define FINLINE inline __attribute__((always_inline))
+#  define NOINLINE inline __attribute__((noinline))
+#endif
 
 
 
@@ -49,7 +55,11 @@ void ERROR(const char* expr, const char* func, const char* file, int line)
 	fprintf(stderr, "\nAssertion failed:\n\n\t%s\n\nFunction: %s\nFile: %s\nLine: %d\n", expr, func, file, line);
 	exit(1);
 }
+#ifdef _MSC_VER
+#define ASSERT(x) if (!(x)) { ERROR(#x, __FUNCSIG__, __FILE__, __LINE__); }
+#else
 #define ASSERT(x) if (!(x)) { ERROR(#x, __PRETTY_FUNCTION__, __FILE__, __LINE__); }
+#endif
 
 
 
@@ -209,15 +219,15 @@ struct CommandFullNode
 
 struct BlackBoxAPI
 {
-	void __attribute__((noinline)) Command1(uint64_t v)
+	void NOINLINE Command1(uint64_t v)
 	{
 		state1 = v * v ^ v;
 	}
-	void __attribute__((noinline)) Command2(uint16_t v)
+	void NOINLINE Command2(uint16_t v)
 	{
 		state2 = v * v ^ v - v;
 	}
-	void __attribute__((noinline)) Command3(uint32_t v)
+	void NOINLINE Command3(uint32_t v)
 	{
 		counter *= v;
 		counter -= v;
@@ -327,7 +337,7 @@ struct CommandProcessor : ICommandProcessor
 
 
 
-template <class T, class S> T* __attribute((noinline)) DoNotGuess(S* val) { return val; }
+template <class T, class S> NOINLINE T* DoNotGuess(S* val) { return val; }
 
 
 
@@ -339,10 +349,8 @@ struct CommandGenData
 	uint32_t end;
 };
 #define NITER 100
-#define N1K 1000
 #define N10K 10000
 #define N100K 100000
-#define N1000K 1000000
 int main()
 {
 	puts("### Methods for passing render commands ###");
@@ -389,15 +397,42 @@ int main()
 			times[0] / 100);
 	}
 
+	// call the commands via virtual interface
+	{
+		FlushCache();
+		double times[1] = {};
+		for (int iter = 0; iter < NITER; ++iter)
+		{
+			CommandProcessor cp;
+			auto* icp = DoNotGuess<ICommandProcessor>(&cp);
+			double t = Time();
+			for (int i = 0; i < N10K; ++i)
+			{
+				auto& gd = genData[i];
+				icp->Command1(gd.arg1);
+				icp->Command2(gd.arg2);
+				for (auto j = gd.begin; j < gd.end; ++j)
+					icp->Command3(values[j]);
+			}
+			times[0] += (Time() - t) * 1000;
+			ASSERT(cp.api.GetResult() == ref);
+		}
+		printf("%20s: %6.3f\n",
+			"call thru virtual",
+			times[0] / 100);
+	}
+
 	// full command array, creation & execution
 	{
 		FlushCache();
-		vector<CommandFullArr> cmds;
-		cmds.reserve(N100K);
+		//vector<CommandFullArr> cmds;
+		//cmds.reserve(N100K);
+		CommandFullArr* cmds = new CommandFullArr[N100K];
 		double times[3] = {};
 		for (int iter = 0; iter < NITER; ++iter)
 		{
-			cmds.clear();
+			//cmds.clear();
+			auto* wcmd = cmds;
 			CommandProcessor cp;
 			auto* icp = DoNotGuess<ICommandProcessor>(&cp);
 			double t0 = Time();
@@ -406,21 +441,24 @@ int main()
 				auto& gd = genData[i];
 				for (auto j = gd.begin; j < gd.end; ++j)
 				{
-					cmds.emplace_back();
-					CommandFullArr& cfa = cmds.back();
+					CommandFullArr& cfa = *wcmd++;
+					//cmds.emplace_back();
+					//CommandFullArr& cfa = cmds.back();
 					cfa.arg1 = gd.arg1;
 					cfa.arg2 = gd.arg2;
 					cfa.arg3 = values[j];
 				}
 			}
 			double t1 = Time();
-			icp->ProcessCommands(cmds.data(), cmds.size());
+			//icp->ProcessCommands(cmds.data(), cmds.size());
+			icp->ProcessCommands(cmds, wcmd - cmds);
 			double t2 = Time();
 			times[0] += (t2 - t0) * 1000;
 			times[1] += (t1 - t0) * 1000;
 			times[2] += (t2 - t1) * 1000;
 			ASSERT(ref == cp.api.GetResult());
 		}
+		delete[] cmds;
 		printf("%20s: %6.3f (arr:%6.3f, exec:%6.3f)\n",
 			"full array",
 			times[0] / 100,
@@ -432,31 +470,36 @@ int main()
 	{
 		FlushCache();
 		double times[1] = {};
-		vector<CommandFullArr> cmds;
-		cmds.reserve(N100K);
+		//vector<CommandFullArr> cmds;
+		//cmds.reserve(N100K);
+		CommandFullArr* cmds = new CommandFullArr[N100K];
 		for (int iter = 0; iter < NITER; ++iter)
 		{
-			cmds.clear();
+			//cmds.clear();
 			CommandProcessor cp;
 			auto* icp = DoNotGuess<ICommandProcessor>(&cp);
 			double t = Time();
 			for (int i = 0; i < N10K; ++i)
 			{
+				auto* wcmd = cmds;
 				auto& gd = genData[i];
 				for (auto j = gd.begin; j < gd.end; ++j)
 				{
-					cmds.emplace_back();
-					CommandFullArr& cfa = cmds.back();
+					CommandFullArr& cfa = *wcmd++;
+					//cmds.emplace_back();
+					//CommandFullArr& cfa = cmds.back();
 					cfa.arg1 = gd.arg1;
 					cfa.arg2 = gd.arg2;
 					cfa.arg3 = values[j];
 				}
-				icp->ProcessCommands(cmds.data(), cmds.size());
-				cmds.clear();
+				//icp->ProcessCommands(cmds.data(), cmds.size());
+				icp->ProcessCommands(cmds, wcmd - cmds);
+				//cmds.clear();
 			}
 			times[0] += (Time() - t) * 1000;
 			ASSERT(ref == cp.api.GetResult());
 		}
+		delete[] cmds;
 		printf("%20s: %6.3f\n",
 			"full array [mesh]",
 			times[0] / 100);
