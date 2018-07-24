@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<style type="text/css">
+html { font-family: sans-serif; font-size: 14px; }
+canvas { background: linear-gradient(to bottom, #ffffff 0%,#f6f6f6 100%); border: 1px solid #CCC; }
+label { width: 300px; display: inline-block; }
+input[type="range"] { width: 300px; }
+	</style>
+</head>
+<body>
+	<h1>Spotlight allocation</h1>
+	<table>
+		<tr>
+			<td>
+				<canvas id="preview" width="1024" height="1024" />
+			</td>
+			<td valign="top">
+				<div>Assuming distance is FOV/perspective-adjusted distance from camera to spotlight frustum and lights are sorted by distance.</div>
+				<br />
+				<label for="firstdist">Distance to first light:</label>
+				<input type="range" id="firstdist" name="firstdist" min="0" max="10" value="1" step="0.01" />
+				<input type="text" id="firstdist_text" readonly disabled value="1" />
+				<br />
+				<label for="distconst">Distance between lights (Constant):</label>
+				<input type="range" id="distconst" name="distconst" min="0" max="10" value="1" step="0.01" />
+				<input type="text" id="distconst_text" readonly disabled value="1" />
+				<br />
+				<label for="distprogr">Distance between lights (Progressive):</label>
+				<input type="range" id="distprogr" name="distprogr" min="0" max="1" value="0.1" step="0.01" />
+				<input type="text" id="distprogr_text" readonly disabled value="0.1" />
+				<br />
+				<br />
+				<div id="lights"></div>
+			</td>
+		</tr>
+	</table>
+	<script type="text/javascript">
+function el(id) { return document.getElementById(id); }
+
+el("firstdist").addEventListener("input", function(){ el("firstdist_text").value = event.currentTarget.value; recalclights(); reallocate(); redraw(); })
+el("distconst").addEventListener("input", function(){ el("distconst_text").value = event.currentTarget.value; recalclights(); reallocate(); redraw(); })
+el("distprogr").addEventListener("input", function(){ el("distprogr_text").value = event.currentTarget.value; recalclights(); reallocate(); redraw(); })
+recalclights()
+reallocate()
+redraw()
+
+function float2str(f)
+{
+	var s = f.toFixed(2)
+	while (s[s.length - 1] == "0")
+		s = s.substring(0, s.length - 1)
+	if (s[s.length - 1] == ".")
+		s = s.substring(0, s.length - 1)
+	return s
+}
+
+function recalclights()
+{
+	var x0 = parseFloat(el("firstdist").value)
+	var xc = parseFloat(el("distconst").value)
+	var xp = parseFloat(el("distprogr").value)
+	window.lights = []
+	for (var i = 0; i < 100; ++i)
+		lights[i] = x0 + xc * i + xp * i * i
+	el("lights").innerText = lights.map(float2str).join("; ")
+}
+
+function morton2scan(m)
+{
+	var x = 0
+	var y = 0
+	for (var i = 0; i < 16; ++i)
+	{
+		x |= ((m & (1 << (i * 2 + 0))) != 0) << i
+		y |= ((m & (1 << (i * 2 + 1))) != 0) << i
+	}
+	//console.log(m, x, y)
+	return { x: x, y: y }
+}
+
+function reallocate()
+{
+	const WIDTH = 1024
+	const MAX_W = WIDTH / 2
+	const MIN_W = 32
+	const MAX_PERCENT = 0.33
+
+	var regionSize = MAX_W
+	var regionAllocCount = 0
+	var regionWidth = 2
+	var regionLastDownsizeAllocs = 0
+	const allocs = []
+	for (var i = 0; i < window.lights.length; ++i)
+	{
+		const D = window.lights[i]
+
+		// calculate ideal shadowmap size
+		var idealSize = MAX_W
+		for (var d = D; d > 1 && idealSize > MIN_W; d /= 2)
+			idealSize /= 2
+
+		// downsize region unit size to ideal size
+		while (regionSize > idealSize)
+		{
+			regionSize /= 2
+			regionAllocCount *= 4
+			regionLastDownsizeAllocs = regionAllocCount
+			regionWidth *= 2
+		}
+
+		// allocate
+		var pos = morton2scan(regionAllocCount++)
+		allocs.push({ x: pos.x * regionSize, y: pos.y * regionSize, size: regionSize })
+
+		if (regionAllocCount == regionWidth * regionWidth)
+			break
+
+		// if size allocation amount exceeds some percentage, force downsize
+		if ((regionAllocCount - regionLastDownsizeAllocs) / (regionWidth * regionWidth - regionLastDownsizeAllocs) > MAX_PERCENT)
+		{
+			regionSize /= 2
+			regionAllocCount *= 4
+			regionLastDownsizeAllocs = regionAllocCount
+			regionWidth *= 2
+		}
+	}
+	window.allocs = allocs
+}
+
+function redraw()
+{
+	var canvas = el("preview")
+	var ctx = canvas.getContext("2d")
+	ctx.clearRect(0, 0, 1024, 1024)
+	ctx.fillStyle = "red"
+	ctx.strokeStyle = "red"
+	ctx.font = "12px sans-serif"
+	ctx.textBaseline = "top";
+	for (var i = 0; i < window.allocs.length; ++i)
+	{
+		const A = window.allocs[i]
+		ctx.beginPath()
+		ctx.rect(A.x + 0.5, A.y + 0.5, A.size - 1, A.size - 1)
+		ctx.stroke()
+		ctx.fillText(i, A.x + 1, A.y + 1)
+	}
+}
+	</script>
+</body>
