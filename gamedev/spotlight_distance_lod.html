@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<style type="text/css">
+html { font-family: sans-serif; font-size: 14px; }
+canvas { background: linear-gradient(to bottom, #ffffff 0%,#f6f6f6 100%); border: 1px solid #CCC; }
+label { width: 300px; display: inline-block; }
+input[type="range"] { width: 300px; }
+	</style>
+</head>
+<body>
+	<h1>Spotlight-point distance for choosing level of detail/priority</h1>
+	<table>
+		<tr>
+			<td>
+				<canvas id="preview" width="640" height="480" />
+			</td>
+			<td valign="top">
+				<div>Left-click to set position, right-click to set target/distance. Test for intersection by moving the mouse cursor.</div>
+				<br />
+				<label for="fovangle">Field of view (degrees):</label>
+				<input type="range" id="fovangle" name="fovangle" min="1" max="179" value="45" step="1" />
+				<input type="text" id="fovangle_text" readonly disabled value="45" />
+				<br />
+				<label for="distmult">Distance multiplier:</label>
+				<input type="range" id="distmult" name="distmult" min="1" max="2" value="1.5" step="0.01" />
+				<input type="text" id="distmult_text" readonly disabled value="1.5" />
+			</td>
+		</tr>
+	</table>
+	<script type="text/javascript">
+function el(id) { return document.getElementById(id); }
+
+el("fovangle").addEventListener("input", function(){ el("fovangle_text").value = event.currentTarget.value; update(); })
+el("distmult").addEventListener("input", function(){ el("distmult_text").value = event.currentTarget.value; update(); })
+el("preview").addEventListener("mousemove", function(){ light.tstx = event.offsetX; light.tsty = event.offsetY; update(); })
+el("preview").addEventListener("mousedown", function()
+{
+	if (event.which == 1)
+	{
+		light.px = event.offsetX
+		light.py = event.offsetY
+	}
+	if (event.which == 3)
+	{
+		light.tx = event.offsetX
+		light.ty = event.offsetY
+		event.preventDefault()
+	}
+	update();
+})
+el("preview").addEventListener("contextmenu", function(){ event.preventDefault() })
+
+const kDegToRad = Math.PI / 180
+
+window.light = { tstx: 0, tsty: 0, px: 160, py: 200, tx: 400, ty: 240, tdist: 0 }
+
+update()
+
+function lerp(a, b, s)
+{
+	return a * (1 - s) + b * s
+}
+
+function dist(x1, y1, x2, y2)
+{
+	var dx = x1 - x2
+	var dy = y1 - y2
+	return Math.sqrt(dx * dx + dy * dy)
+}
+
+function dot(x1, y1, x2, y2)
+{
+	return x1 * x2 + y1 * y2
+}
+
+function recalclight()
+{
+	light.tdist = dist(light.px, light.py, light.tx, light.ty) * Math.tan(parseFloat(el("fovangle").value) / 2 * kDegToRad)
+}
+
+function computeresult()
+{
+	var distmult = parseFloat(el("distmult").value)
+	//var fovhang = parseFloat(el("fovangle").value) / 2 * kDegToRad
+	var tdist = light.tdist * distmult
+	const sphdist = dist(light.tx, light.ty, light.tstx, light.tsty) - tdist
+	const osphdist = dist(light.tx, light.ty, light.px, light.py) - tdist
+
+	if (osphdist > 0)
+	{
+		// origin->target length/direction
+		var dx = light.tx - light.px
+		var dy = light.ty - light.py
+		var dlen = Math.sqrt(dx * dx + dy * dy)
+		var idlen = dlen ? 1 / dlen : 0 // normalize
+		dx *= idlen
+		dy *= idlen
+
+		var realfovhang = Math.asin(tdist / dlen)
+
+		// target->test point length/direction
+		var t2tstx = light.tstx - light.tx
+		var t2tsty = light.tsty - light.ty
+		var t2tstlen = Math.sqrt(t2tstx * t2tstx + t2tsty * t2tsty)
+		var it2tstlen = t2tstlen ? 1 / t2tstlen : 0 // normalize
+		t2tstx *= it2tstlen
+		t2tsty *= it2tstlen
+
+		// check if behind sphere's area of influence
+		var dtdot = dot(-dx, -dy, t2tstx, t2tsty)
+		var dtang = Math.acos(Math.max(-1, Math.min(1, dtdot)))
+		if (dtang < Math.PI / 2 - realfovhang)
+		{
+			// origin->test point length/direction
+			var p2tstx = light.tstx - light.px
+			var p2tsty = light.tsty - light.py
+			var p2tstlen = Math.sqrt(p2tstx * p2tstx + p2tsty * p2tsty)
+			var ip2tstlen = p2tstlen ? 1 / p2tstlen : 0 // normalize
+			p2tstx *= ip2tstlen
+			p2tsty *= ip2tstlen
+
+			// check if in or behind origin's area of influence
+			var dpdot = dot(-dx, -dy, p2tstx, p2tsty)
+			var dpang = Math.acos(Math.max(-1, Math.min(1, dpdot)))
+			if (dpang < Math.PI / 2 - realfovhang)
+			{
+				// point distance
+				light.distance = p2tstlen
+			}
+			else
+			{
+				// edge distance
+				// - get projections of origin/target
+				const oproj = dot(light.px, light.py, dx, dy)
+				const tproj = dot(light.tx, light.ty, dx, dy)
+				// - project point onto spotlight axis
+				const tstproj = dot(light.tstx, light.tsty, dx, dy)
+				// - find position of projected point
+				const tstpx = dx * (tstproj - oproj) + light.px
+				const tstpy = dy * (tstproj - oproj) + light.py
+				// - get distance between projected and test points
+				const tstpdist = dist(tstpx, tstpy, light.tstx, light.tsty)
+				// - get distance to foundational point
+				const tstp2fdist = tstpdist * Math.tan(realfovhang)
+				// - get foundational point
+				const fpx = dx * (tstproj - oproj + tstp2fdist) + light.px
+				const fpy = dy * (tstproj - oproj + tstp2fdist) + light.py
+				window.dbg = { x: fpx, y: fpy }
+				// - get foundational-test point distance
+				const tst2fdist = dist(fpx, fpy, light.tstx, light.tsty)
+				// - calculate nominal distance
+				const nfdist = tdist * (tstproj + tstp2fdist - oproj) / (tproj - oproj)
+				// output
+				light.distance = tst2fdist - nfdist
+			}
+			return
+		}
+	}
+
+	light.distance = sphdist
+}
+
+function redraw()
+{
+	var canvas = el("preview")
+	var ctx = canvas.getContext("2d")
+	ctx.clearRect(0, 0, 640, 480)
+	ctx.strokeStyle = "rgba(0,0,0,1)"
+
+	var distmult = parseFloat(el("distmult").value)
+
+	var dx = light.tx - light.px
+	var dy = light.ty - light.py
+	var dlen = Math.sqrt(dx * dx + dy * dy)
+	var idlen = dlen ? 1 / dlen : 0
+	dx *= idlen
+	dy *= idlen
+	var tx = -dy, ty = dx
+	var tdx = tx * light.tdist, tdy = ty * light.tdist
+
+	// draw spotlight "spine"
+	ctx.beginPath()
+	ctx.moveTo(light.px, light.py)
+	ctx.lineTo(light.tx, light.ty)
+	ctx.stroke()
+	ctx.beginPath()
+	ctx.moveTo(light.tx - tdx, light.ty - tdy)
+	ctx.lineTo(light.tx + tdx, light.ty + tdy)
+	ctx.stroke()
+
+	// draw spotlight sides
+	ctx.strokeStyle = "rgba(0,0,0,0.5)"
+	ctx.beginPath()
+	ctx.moveTo(light.tx - tdx, light.ty - tdy)
+	ctx.lineTo(light.px, light.py)
+	ctx.lineTo(light.tx + tdx, light.ty + tdy)
+	ctx.stroke()
+
+	// draw spotlight distance circles
+	ctx.strokeStyle = "rgba(240,220,0,0.5)"
+	for (var i = 0; i <= 1; i += 0.01)
+	{
+		ctx.beginPath()
+		ctx.arc(
+			lerp(light.px, light.tx, i),
+			lerp(light.py, light.ty, i),
+			light.tdist * distmult * i,
+			0, Math.PI * 2
+		)
+		ctx.stroke()
+	}
+
+	// draw crosshair
+	ctx.strokeStyle = ctx.fillStyle = light.distance <= 0 ? "rgba(255,0,0,1)" : "rgba(0,0,0,1)"
+	ctx.beginPath()
+	ctx.moveTo(0.5 + light.tstx - 1,  0.5 + light.tsty)
+	ctx.lineTo(0.5 + light.tstx - 10, 0.5 + light.tsty)
+	ctx.moveTo(0.5 + light.tstx + 1,  0.5 + light.tsty)
+	ctx.lineTo(0.5 + light.tstx + 10, 0.5 + light.tsty)
+	ctx.moveTo(0.5 + light.tstx,      0.5 + light.tsty - 1)
+	ctx.lineTo(0.5 + light.tstx,      0.5 + light.tsty - 10)
+	ctx.moveTo(0.5 + light.tstx,      0.5 + light.tsty + 1)
+	ctx.lineTo(0.5 + light.tstx,      0.5 + light.tsty + 10)
+	ctx.stroke()
+
+	ctx.textAlign = "right"
+	ctx.textBaseline = "bottom"
+	ctx.fillText("distance=" + light.distance.toFixed(3), light.tstx, light.tsty)
+
+	// draw debug point
+	if (window.dbg)
+	{
+		ctx.beginPath()
+		ctx.arc(dbg.x, dbg.y, 1, 0, Math.PI * 2)
+		ctx.stroke()
+	}
+}
+
+function update()
+{
+	recalclight()
+	computeresult()
+	redraw()
+}
+	</script>
+</body>
