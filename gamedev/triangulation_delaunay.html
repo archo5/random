@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<style type="text/css">
+html { font-family: sans-serif; font-size: 14px; }
+.previewBlock { display: inline-block; width: 640px; height: 480px; position: relative; border: 1px solid #CCC; background: linear-gradient(to bottom, #ffffff 0%,#f6f6f6 100%); }
+.previewBlock canvas { position: absolute; }
+label { width: 300px; display: inline-block; }
+input[type="range"] { width: 300px; }
+	</style>
+</head>
+<body>
+	<h1>Triangulation (Delaunay)</h1>
+	<table>
+		<tr>
+			<td>
+				<div class="previewBlock">
+					<canvas id="preview" width="640" height="480"></canvas>
+					<canvas id="preview2" width="640" height="480"></canvas>
+				</div>
+			</td>
+			<td valign="top">
+				<div>Left-click to add point. Test weights by moving the mouse cursor.</div>
+				<button id="act_clear">Clear</button>
+				<hr />
+				<div>
+					<label>
+						<input type="range" id="opt_dup" min="0" max="1" step="0.01" value="0" oninput="opt_dup_o.value = (opt_dup.value * 100).toFixed(0) + '%'" />
+						% of duplicate points: <output id="opt_dup_o">0%</output>
+					</label>
+				</div>
+				<div>
+					<label>
+						<input type="range" id="opt_dpo" min="0" max="0.001" step="0.00001" value="0" oninput="opt_dpo_o.value = opt_dpo.value" />
+						duplicate point offset: <output id="opt_dpo_o">0</output>
+					</label>
+				</div>
+				Presets:
+				<div>
+					<button id="act_gen_grid40">Grid (gap=40)</button>
+					<button id="act_gen_grid20">Grid (gap=20)</button>
+					<button id="act_gen_grid10">Grid (gap=10)</button>
+					<button id="act_gen_grid5">Grid (gap=5)</button>
+				</div>
+				<div>
+					<button id="act_gen_line">Line</button>
+					<button id="act_gen_line2">Line2</button>
+					<button id="act_gen_line3">Line3</button>
+					<button id="act_gen_line3f">Line3F</button>
+				</div>
+				<div>
+					<button id="act_gen_circle">Circle</button>
+					<button id="act_gen_circlem1">Circle (+midpoint first)</button>
+					<button id="act_gen_circlem2">Circle (+midpoint last)</button>
+				</div>
+				<div>
+					Random (in a box):
+					<button id="act_gen_rand100box">100</button>
+					<button id="act_gen_rand1000box">1000</button>
+					<button id="act_gen_rand10000box">10000</button>
+				</div>
+				<div>
+					Random (in a circle):
+					<button id="act_gen_rand100circle">100</button>
+					<button id="act_gen_rand1000circle">1000</button>
+					<button id="act_gen_rand10000circle">10000</button>
+				</div>
+			</td>
+		</tr>
+	</table>
+	<script type="text/javascript">
+const HUGE_VAL = 9999999
+function el(id) { return document.getElementById(id); }
+
+el("preview2").addEventListener("click", function()
+{
+	tri.AddPoint(event.offsetX, event.offsetY)
+	update(true);
+})
+el("preview2").addEventListener("mousemove", function(){ tri.tstx = event.offsetX; tri.tsty = event.offsetY; redraw2(); })
+el("preview2").addEventListener("mouseout", function(){ tri.tstx = null; tri.tsty = null; redraw2(); })
+el("act_clear").addEventListener("click", function()
+{
+	tri.Clear()
+	update()
+})
+function gengrid(gap)
+{
+	tri.Clear()
+	for (var y = 100; y < 380 + gap; y += gap)
+	{
+		for (var x = 100; x < 540 + gap; x += gap)
+		{
+			tri.AddPoint(x, y)
+		}
+	}
+	update()
+}
+el("act_gen_grid40").addEventListener("click", function() { gengrid(40) })
+el("act_gen_grid20").addEventListener("click", function() { gengrid(20) })
+el("act_gen_grid10").addEventListener("click", function() { gengrid(10) })
+el("act_gen_grid5").addEventListener("click", function() { gengrid(5) })
+el("act_gen_line").addEventListener("click", function()
+{
+	tri.Clear()
+	for (var x = 100; x < 540 + 20; x += 20)
+		tri.AddPoint(x, 240)
+	update()
+})
+el("act_gen_line2").addEventListener("click", function()
+{
+	tri.Clear()
+	for (var x = 100; x < 140; x += 20)
+		tri.AddPoint(x, 240)
+	update()
+})
+el("act_gen_line3").addEventListener("click", function()
+{
+	tri.Clear()
+	for (var x = 100; x < 160; x += 20)
+		tri.AddPoint(x, 240)
+	update()
+})
+el("act_gen_line3f").addEventListener("click", function()
+{
+	tri.Clear()
+	tri.AddPoint(100, 240)
+	tri.AddPoint(140, 240)
+	tri.AddPoint(120, 240)
+	update()
+})
+el("act_gen_circle").addEventListener("click", function()
+{
+	tri.Clear()
+	for (var i = 0; i < Math.PI * 2; i += 0.1)
+	{
+		tri.AddPoint(320 + Math.cos(i) * 200, 240 + Math.sin(i) * 200)
+	}
+	update()
+})
+el("act_gen_circlem1").addEventListener("click", function()
+{
+	tri.Clear()
+	tri.AddPoint(320, 240)
+	for (var i = 0; i < Math.PI * 2; i += 0.1)
+	{
+		tri.AddPoint(320 + Math.cos(i) * 200, 240 + Math.sin(i) * 200)
+	}
+	update()
+})
+el("act_gen_circlem2").addEventListener("click", function()
+{
+	tri.Clear()
+	for (var i = 0; i < Math.PI * 2; i += 0.1)
+	{
+		tri.AddPoint(320 + Math.cos(i) * 200, 240 + Math.sin(i) * 200)
+	}
+	tri.AddPoint(320, 240)
+	update()
+})
+function genbox(num)
+{
+	tri.Clear()
+	for (var i = 0; i < num; i++)
+	{
+		tri.AddPoint(100 + Math.random() * 440, 100 + Math.random() * 280)
+	}
+	update()
+}
+el("act_gen_rand100box").addEventListener("click", function() { genbox(100) })
+el("act_gen_rand1000box").addEventListener("click", function() { genbox(1000) })
+el("act_gen_rand10000box").addEventListener("click", function() { genbox(10000) })
+function gencircle(num)
+{
+	tri.Clear()
+	for (var i = 0; i < num; i++)
+	{
+		const ang = Math.random() * 2 * Math.PI
+		const ext = Math.sqrt(Math.random()) * 200
+		tri.AddPoint(320 + Math.cos(ang) * ext, 240 + Math.sin(ang) * ext)
+	}
+	update()
+}
+el("act_gen_rand100circle").addEventListener("click", function() { gencircle(100) })
+el("act_gen_rand1000circle").addEventListener("click", function() { gencircle(1000) })
+el("act_gen_rand10000circle").addEventListener("click", function() { gencircle(10000) })
+
+
+
+function random_color()
+{
+	var color = "#"
+	for (var i = 0; i < 6; ++i)
+	{
+		color += "0123456789ABCDEF"[Math.floor(Math.random() * 16)]
+	}
+	return color
+}
+
+function random_color2()
+{
+	var main = Math.random()
+	var off = Math.random()
+	var col = [main * 140 + 40 - off * 40, main * 120 + 90 - off * 20, main * 120 + 130]
+	var color = "#"
+	const hex = "0123456789ABCDEF"
+	for (var i = 0; i < 3; ++i)
+	{
+		var v = Math.floor(col[i])
+		color += hex[Math.floor(v / 16)]
+		color += hex[v % 16]
+	}
+	return color
+}
+
+function distance_squared(p0, p1)
+{
+	const x = p1.y - p0.y
+	const y = p0.x - p1.x
+	return x * x + y * y
+}
+
+function edge_normal(p0, p1)
+{
+	var x = p1.y - p0.y
+	var y = p0.x - p1.x
+	const len2 = x * x + y * y
+	if (len2)
+	{
+		const invlen = 1.0 / Math.sqrt(len2)
+		x *= invlen
+		y *= invlen
+	}
+	else
+	{
+		x = 0
+		y = 0
+	}
+	return { x: x, y: y }
+}
+
+function dot2(a, b)
+{
+	return a.x * b.x + a.y * b.y
+}
+
+
+
+function Triangulation()
+{
+	this.inpts = []
+	this.tstx = null
+	this.tsty = null
+	this._Prep()
+}
+
+Triangulation.prototype.Clear = function()
+{
+	this.inpts = []
+}
+
+Triangulation.prototype.AddPoint = function(x, y)
+{
+	const p = { x: x, y: y, color: random_color2() }
+	const pidx = this.inpts.length
+	this.inpts.push(p)
+	return pidx
+}
+
+TKEY_INFO =
+{
+	t0: { p0key: "p0", p1key: "p1" },
+	t1: { p0key: "p1", p1key: "p2" },
+	t2: { p0key: "p2", p1key: "p0" },
+}
+Triangulation.prototype._ValidateAll = function()
+{
+	return
+	for (var i = 0; i < this.tris.length; i++)
+	{
+		const T = this.tris[i]
+		if (typeof T.p0 != "number" || T.p0 < 0 || T.p0 >= this.points.length) throw "v:p0"
+		if (typeof T.p1 != "number" || T.p1 < 0 || T.p1 >= this.points.length) throw "v:p1"
+		if (typeof T.p2 != "number" || T.p2 < 0 || T.p2 >= this.points.length) throw "v:p2"
+
+		const p0 = this.points[T.p0], p1 = this.points[T.p1], p2 = this.points[T.p2]
+		const dtv = p0.x * (p1.y - p2.y) + p1.x * (p2.y - p0.y) + p2.x * (p0.y - p1.y)
+		if (dtv < 0.0001)
+		{
+			this.debug.push({ type: "tri", p0: T.p0, p1: T.p1, p2: T.p2 })
+			throw "d-tri:" + dtv
+		}
+
+		for (var key in TKEY_INFO)
+		{
+			if (T[key] !== null)
+			{
+				const AT = this.tris[T[key]]
+				var found = 0
+				for (var subkey in TKEY_INFO)
+				{
+					if (AT[subkey] == i)
+					{
+						found++
+					}
+				}
+				if (found != 1)
+					throw "bad adj findings:" + found
+			}
+		}
+	}
+}
+
+Triangulation.prototype._PickNextTri = function(p, tid, ptid)
+{
+	t = this.tris[tid]
+	const p0 = this.points[t.p0]
+	const p1 = this.points[t.p1]
+	const p2 = this.points[t.p2]
+	const e0n = edge_normal(p0, p1)
+	const e1n = edge_normal(p1, p2)
+	const e2n = edge_normal(p2, p0)
+	const e0d = dot2(e0n, p0)
+	const e1d = dot2(e1n, p1)
+	const e2d = dot2(e2n, p2)
+	const e0p = dot2(e0n, p)
+	const e1p = dot2(e1n, p)
+	const e2p = dot2(e2n, p)
+//	if (e0d <= e0p && e1d <= e1p && e2d <= e2p)
+//		return tid
+	if (t.t0 !== ptid && e0p > e0d && e0p - e0d > e1p - e1d && e0p - e0d > e2p - e2d)
+		return t.t0 !== null ? t.t0 : -1
+	if (t.t1 !== ptid && e1p > e1d && e1p - e1d > e2p - e2d)
+		return t.t1 !== null ? t.t1 : -2
+	if (t.t2 !== ptid && e2p > e2d)
+		return t.t2 !== null ? t.t2 : -3
+	return tid
+}
+
+Triangulation.prototype._ChangeAdjacency = function(tid, tgt, p0, p1)
+{
+	if (tid === null)
+		return
+	const T = this.tris[tid]
+	if (T.p0 == p1 && T.p1 == p0)
+		T.t0 = tgt
+	else if (T.p1 == p1 && T.p2 == p0)
+		T.t1 = tgt
+	else if (T.p2 == p1 && T.p0 == p0)
+		T.t2 = tgt
+	else
+		throw "bad adjacency change"
+}
+
+Triangulation.prototype._TriHasPts = function(tid, p0, p1)
+{
+	if (tid === null)
+		return true
+	const T = this.tris[tid]
+	if (T.p0 == p1 && T.p1 == p0)
+		return true
+	else if (T.p1 == p1 && T.p2 == p0)
+		return true
+	else if (T.p2 == p1 && T.p0 == p0)
+		return true
+	else
+		return false
+}
+
+Triangulation.prototype._TryFlipFirstEdge = function(tid, outqueue, wrapTriCheck)
+{
+	this.numAttFlips++
+	tid |= 0
+	const T1 = this.tris[tid]
+	const ti2 = T1.t0
+	if (ti2 === null)
+		return false
+	const T2 = this.tris[ti2]
+
+	// generate quad
+	const p0 = T1.p1, p1 = T1.p2, p2 = T1.p0
+	const t0 = T1.t1, t1 = T1.t2
+	const pp0 = this.points[p0]
+	const pp1 = this.points[p1]
+	const pp2 = this.points[p2]
+	var p3, t2, t3
+	if (T2.t0 === tid)
+	{
+		p3 = T2.p2
+		t2 = T2.t1
+		t3 = T2.t2
+	}
+	else if (T2.t1 === tid)
+	{
+		p3 = T2.p0
+		t2 = T2.t2
+		t3 = T2.t0
+	}
+	else if (T2.t2 === tid)
+	{
+		p3 = T2.p1
+		t2 = T2.t0
+		t3 = T2.t1
+	}
+	else throw "not adjacent?!"
+
+	// DEBUG
+	if (!this._TriHasPts(t0, p0, p1)) throw "!THP0"
+	if (!this._TriHasPts(t1, p1, p2)) throw "!THP1"
+	if (!this._TriHasPts(t2, p2, p3)) throw "!THP2"
+	if (!this._TriHasPts(t3, p3, p0)) throw "!THP3"
+
+	const pp3 = this.points[p3]
+//	this.debug.push({ type: "quad", p0: p0, p1: p1, p2: p2, p3: p3 })
+
+	var flip = null
+
+	// check if flipping tris would produce or resolve degenerate tris
+	{
+		var flipY = false, flipN = false
+		const dtv1a = pp0.x * (pp1.y - pp2.y) + pp1.x * (pp2.y - pp0.y) + pp2.x * (pp0.y - pp1.y)
+		const dtv1b = pp0.x * (pp3.y - pp2.y) + pp3.x * (pp2.y - pp0.y) + pp2.x * (pp0.y - pp3.y)
+		if (Math.abs(dtv1a) < 0.0001 || Math.abs(dtv1b) < 0.0001) flipY = true
+		const dtv2a = pp1.x * (pp2.y - pp3.y) + pp2.x * (pp3.y - pp1.y) + pp3.x * (pp1.y - pp2.y)
+		const dtv2b = pp1.x * (pp0.y - pp3.y) + pp0.x * (pp3.y - pp1.y) + pp3.x * (pp1.y - pp0.y)
+		if (Math.abs(dtv2a) < 0.0001 || Math.abs(dtv2b) < 0.0001) flipN = true
+		if (flipY && flipN)
+			throw "inserted something unresolvable"
+		if (flipY)
+			flip = true
+		if (flipN)
+			flip = false
+	}
+
+	// check if one of the points is from the wrapping triangle
+	if (wrapTriCheck && flip === null)
+	{
+		var numFlipY = 0, numFlipN = 0
+		if (p0 >= this.inpts.length) numFlipY++
+		if (p2 >= this.inpts.length) numFlipY++
+		if (p1 >= this.inpts.length) numFlipN++
+		if (p3 >= this.inpts.length) numFlipN++
+		if (numFlipY + numFlipN >= 1)
+			flip = !!numFlipY && !numFlipN
+	}
+
+	if (flip === null)
+	{
+		// check flip condition (circumcircle)
+		const da = pp0.x - pp3.x, db = pp0.y - pp3.y, dc = da * da + db * db
+		const dd = pp1.x - pp3.x, de = pp1.y - pp3.y, df = dd * dd + de * de
+		const dg = pp2.x - pp3.x, dh = pp2.y - pp3.y, di = dg * dg + dh * dh
+		// aei+bfg+cdh-ceg-bdi-afh
+		const d =
+			  da * de * di
+			+ db * df * dg
+			+ dc * dd * dh
+			- dc * de * dg
+			- db * dd * di
+			- da * df * dh
+		flip = d > 0.00001 // prevent endless flipping due to rounding errors
+	}
+	if (!flip)
+		return false;
+
+	// [DEBUG] check that we're not flipping a concave quad
+	const pts = [pp0, pp1, pp2, pp3]
+	for (var i = 0; i < 4; i++)
+	{
+		const j = (i + 1) % 4;
+		const k = (i + 2) % 4;
+		const dx1 = pts[j].x - pts[i].x
+		const dy1 = pts[j].y - pts[i].y
+		const dx2 = pts[k].x - pts[j].x
+		const dy2 = pts[k].y - pts[j].y
+		const cross = dx1 * dy2 - dy1 * dx2
+		if (cross < -0.00001)
+		{
+			if (wrapTriCheck)
+				return false
+			this.debug.push({ type: "quad", p0: p0, p1: p1, p2: p2, p3: p3 })
+			this.debug.push({ type: "edge0", p0: p0, p1: p2 })
+			this.debug.push({ type: "edge1", p0: p1, p1: p3 })
+			throw "not convex"
+		}
+	}
+
+	// rotate
+//	throw "flip"
+	// T1 (quad pts): 2-0-1 -> 3-1-2
+	this.tris[tid] = { p0: p3, p1: p1, p2: p2, t0: ti2, t1: t1, t2: t2 }
+	// T2 (quad pts): ?-?-? -> 1-3-0
+	this.tris[ti2] = { p0: p1, p1: p3, p2: p0, t0: tid, t1: t3, t2: t0 }
+
+	// adjust adjacency data for t0-t3
+	this._ChangeAdjacency(t0, ti2, p0, p1)
+	this._ChangeAdjacency(t1, tid, p1, p2)
+	this._ChangeAdjacency(t2, tid, p2, p3)
+	this._ChangeAdjacency(t3, ti2, p3, p0)
+	this._ValidateAll()
+
+	outqueue[tid] = true
+	outqueue[ti2] = true
+	this.numFlips++
+	return true
+}
+
+Triangulation.prototype._RotateTri = function(tid)
+{
+	const T = this.tris[tid]
+	this.tris[tid] = { p0: T.p1, p1: T.p2, p2: T.p0, t0: T.t1, t1: T.t2, t2: T.t0 }
+}
+
+Triangulation.prototype._Prep = function()
+{
+	this.debug = []
+	this.tris = []
+	this.numFlips = 0
+	this.numAttFlips = 0
+}
+
+Triangulation.prototype.Recalculate = function()
+{
+	this._Prep()
+
+	// find AABB
+	var xmin = HUGE_VAL
+	var xmax = -HUGE_VAL
+	var ymin = HUGE_VAL
+	var ymax = -HUGE_VAL
+	for (var i = 0; i < this.inpts.length; i++)
+	{
+		const p = this.inpts[i]
+		if (xmin > p.x) xmin = p.x
+		if (xmax < p.x) xmax = p.x
+		if (ymin > p.y) ymin = p.y
+		if (ymax < p.y) ymax = p.y
+	}
+	const xmx2 = xmin + (xmax - xmin) * 2
+	const ymx2 = ymin + (ymax - ymin) * 2
+	const SAFE_OFF = 20 // xmax - xmin > ymax - ymin ? xmax - xmin : ymax - ymin
+	const SAFE_OF2 = SAFE_OFF * 2
+	const aabb_points = // triangle that covers the entire AABB
+	[
+		{ x: xmin - SAFE_OFF, y: ymin - SAFE_OFF, color: "#000000" },
+		{ x: xmx2 + SAFE_OF2, y: ymin - SAFE_OFF, color: "#000000" },
+		{ x: xmin - SAFE_OFF, y: ymx2 + SAFE_OF2, color: "#000000" },
+	]
+
+	this.points = this.inpts.concat(aabb_points)
+	const pib = this.inpts.length
+	const p0 = pib + 0
+	const p1 = pib + 1
+	const p2 = pib + 2
+
+	this.tris =
+	[
+		// TRIANGLE
+		//    p0     ---     p1     ---     p2     ---     p0
+		//            t0             t1             t2
+		{ p0: p0, p1: p1, p2: p2, t0: null, t1: null, t2: null },
+	]
+
+	// insert input points into surrounding triangle
+	for (var i = 0; i < this.inpts.length; i++)
+	{
+		const P = this.inpts[i]
+
+		// find triangle enclosing point
+		var ptid = null
+		var tid = 0
+		for (;;)
+		{
+			const nt = this._PickNextTri(P, tid, ptid)
+			if (nt === tid)
+				break
+			if (nt < 0)
+				throw "next tri = null (exited)"
+			ptid = tid
+			tid = nt
+		}
+
+		// subdivide that triangle (replace one, add two)
+		const T = this.tris[tid]
+		if (distance_squared(this.points[T.p0], P) < 0.0001 ||
+			distance_squared(this.points[T.p1], P) < 0.0001 ||
+			distance_squared(this.points[T.p2], P) < 0.0001)
+			continue // point overlaps one of the existing ones
+		const tid0 = tid, tid1 = this.tris.length, tid2 = tid1 + 1
+		this.tris.push(null, null)
+		this.tris[tid0] = { p0: T.p0, p1: T.p1, p2: i, t0: T.t0, t1: tid1, t2: tid2 }
+		this.tris[tid1] = { p0: T.p1, p1: T.p2, p2: i, t0: T.t1, t1: tid2, t2: tid0 }
+		this.tris[tid2] = { p0: T.p2, p1: T.p0, p2: i, t0: T.t2, t1: tid0, t2: tid1 }
+
+		this._ChangeAdjacency(T.t0, tid0, T.p0, T.p1)
+		this._ChangeAdjacency(T.t1, tid1, T.p1, T.p2)
+		this._ChangeAdjacency(T.t2, tid2, T.p2, T.p0)
+
+		const flip_queue = {}
+		this._TryFlipFirstEdge(tid0, flip_queue, true)
+		this._TryFlipFirstEdge(tid1, flip_queue, true)
+		this._TryFlipFirstEdge(tid2, flip_queue, true)
+
+		// initial flip should resolve some degenerate triangles
+		this._ValidateAll()
+
+		for (;;)
+		{
+			var ftid = null
+			for (ftid in flip_queue)
+				break
+			if (ftid === null)
+				break
+			delete flip_queue[ftid]
+
+			if (this._TryFlipFirstEdge(ftid, flip_queue, true)) continue
+			this._RotateTri(ftid)
+			if (this._TryFlipFirstEdge(ftid, flip_queue, true)) continue
+			this._RotateTri(ftid)
+			if (this._TryFlipFirstEdge(ftid, flip_queue, true)) continue
+		}
+	}
+
+	// TODO any concave outer edges left to fix?
+
+	// remove all triangles associated with helper points
+	var nii = 0
+	var nia = []
+	for (var i = 0; i < this.tris.length; i++)
+	{
+		const T = this.tris[i]
+		nia.push(nii)
+		if (T.p0 == p0 || T.p1 == p0 || T.p2 == p0 ||
+			T.p0 == p1 || T.p1 == p1 || T.p2 == p1 ||
+			T.p0 == p2 || T.p1 == p2 || T.p2 == p2)
+			this.tris[i] = null
+		else
+			nii++
+	}
+	// - also remove references to those triangles and perform index remapping
+	for (var i = 0; i < this.tris.length; i++)
+	{
+		const T = this.tris[i]
+		if (T === null)
+			continue
+
+		if (T.t0 !== null && this.tris[T.t0] === null)
+			T.t0 = null
+		else
+			T.t0 = nia[T.t0]
+
+		if (T.t1 !== null && this.tris[T.t1] === null)
+			T.t1 = null
+		else
+			T.t1 = nia[T.t1]
+
+		if (T.t2 !== null && this.tris[T.t2] === null)
+			T.t2 = null
+		else
+			T.t2 = nia[T.t2]
+	}
+	this.tris = this.tris.filter(x => !!x)
+}
+
+/* TODO unfinished
+Triangulation.prototype.Recalculate2 = function()
+{
+	this._Prep()
+
+	// find first non-degenerate triangle to insert
+	var foundpts = null
+	for (var i = 0; i + 2 < this.inpts.length; i++)
+	{
+		const p0 = this.inpts[i]
+		const p1 = this.inpts[i + 1]
+		const p2 = this.inpts[i + 2]
+
+		const dtv = p0.x * (p1.y - p2.y) + p1.x * (p2.y - p0.y) + p2.x * (p0.y - p1.y)
+		if (dtv == 0)
+			continue
+
+		foundpts = i
+		this.points = this.inpts.slice(0)
+		if (dtv < 0)
+			this.tris = [{ p0: i, p1: i + 2, p2: i + 1, t0: null, t1: null, t2: null }]
+		else
+			this.tris = [{ p0: i, p1: i + 1, p2: i + 2, t0: null, t1: null, t2: null }]
+		break
+	}
+	if (foundpts === null)
+		return
+
+	// insert input points
+	for (var i = 0; i < this.inpts.length; i++)
+	{
+		if (i >= foundpts && i <= foundpts + 2)
+			continue
+
+		const P = this.inpts[i]
+
+		// find triangle enclosing point
+		var ptid = undefined
+		var tid = 0
+		while (tid >= 0)
+		{
+			const nt = this._PickNextTri(P, tid, ptid)
+			if (nt === tid)
+				break
+			ptid = tid
+			tid = nt
+		}
+
+		const flip_queue = {}
+		if (tid >= 0)
+		{
+			// subdivide that triangle (replace one, add two)
+			const t = this.tris[tid]
+			const tid0 = tid, tid1 = this.tris.length, tid2 = tid1 + 1
+			this.tris.push(null, null)
+			this.tris[tid0] = { p0: t.p0, p1: t.p1, p2: i, t0: t.t0, t1: tid1, t2: tid2 }
+			this.tris[tid1] = { p0: t.p1, p1: t.p2, p2: i, t0: t.t1, t1: tid2, t2: tid0 }
+			this.tris[tid2] = { p0: t.p2, p1: t.p0, p2: i, t0: t.t2, t1: tid0, t2: tid1 }
+
+			this._ChangeAdjacency(t.t0, tid0, t.p0, t.p1)
+			this._ChangeAdjacency(t.t1, tid1, t.p1, t.p2)
+			this._ChangeAdjacency(t.t2, tid2, t.p2, t.p0)
+
+			this._TryFlipFirstEdge(tid0, flip_queue)
+			this._TryFlipFirstEdge(tid1, flip_queue)
+			this._TryFlipFirstEdge(tid2, flip_queue)
+		}
+		else
+		{
+			// build in both directions along the hull, starting from the noted edge
+			const T = this.tris[ptid]
+			flip_queue[this.tris.length] = true
+			var ltid, rtid
+			switch (tid)
+			{
+			case -1:
+				T.t0 = this.tris.length
+				ltid = T.t1
+				rtid = T.t2
+				this.tris.push({ p0: T.p1, p1: T.p0, p2: i, t0: ptid, t1: null, t2: null })
+				break
+			case -2:
+				T.t1 = this.tris.length
+				ltid = T.t2
+				rtid = T.t0
+				this.tris.push({ p0: T.p2, p1: T.p1, p2: i, t0: ptid, t1: null, t2: null })
+				break
+			case -3:
+				T.t2 = this.tris.length
+				ltid = T.t0
+				rtid = T.t1
+				this.tris.push({ p0: T.p0, p1: T.p2, p2: i, t0: ptid, t1: null, t2: null })
+				break
+			}
+			var pnltid = ptid, pnrtid = ptid
+			while (ltid !== null)
+			{
+				const LT = this.tris[ltid]
+
+				// find the adjacent outer edge (next from edge shared with 'pnltid')
+				if (LT.t0 === pnltid)
+				{
+					const en = edge_normal(this.points[LT.p1], this.points[LT.p2])
+					const ed = dot2(en, this.points[LT.p1])
+					const pd = dot2(en, P)
+					if (pd < ed)
+						break
+					const nltid = this.tris.length
+					flip_queue[nltid] = true
+					this.tris.push({ p0: LT.p2, p1: LT.p1, p2: i, t0: ltid }) // TODO
+				}
+				else if (LT.t1 == pnltid)
+				{
+				}
+				else if (LT.t2 == pnltid)
+				{
+				}
+			}
+			while (rtid !== null)
+			{
+			}
+		}
+
+		for (;;)
+		{
+			var ftid = null
+			for (ftid in flip_queue)
+				break
+			if (ftid === null)
+				break
+			delete flip_queue[ftid]
+
+			if (this._TryFlipFirstEdge(ftid, flip_queue)) continue
+			this._RotateTri(ftid)
+			if (this._TryFlipFirstEdge(ftid, flip_queue)) continue
+			this._RotateTri(ftid)
+			if (this._TryFlipFirstEdge(ftid, flip_queue)) continue
+		}
+	}
+}
+*/
+
+window.tri = new Triangulation()
+
+function parse_color(hexcol)
+{
+	if (hexcol[0] != "#")
+		throw "invalid color: " + hexcol
+	return [
+		parseInt(hexcol.substring(1, 3), 16),
+		parseInt(hexcol.substring(3, 5), 16),
+		parseInt(hexcol.substring(5, 7), 16),
+	]
+}
+
+function draw_tri(ctx, p0, p1, p2)
+{
+	var xmin = p0.x < p1.x ? p0.x : p1.x
+	var ymin = p0.y < p1.y ? p0.y : p1.y
+	var xmax = p0.x > p1.x ? p0.x : p1.x
+	var ymax = p0.y > p1.y ? p0.y : p1.y
+	xmin = p2.x < xmin ? p2.x : xmin
+	ymin = p2.y < ymin ? p2.y : ymin
+	xmax = p2.x > xmax ? p2.x : xmax
+	ymax = p2.y > ymax ? p2.y : ymax
+	xmin = Math.floor(xmin - 1)
+	ymin = Math.floor(ymin - 1)
+	xmax = Math.ceil(xmax + 1)
+	ymax = Math.ceil(ymax + 1)
+
+	const v0x = p1.x - p0.x, v0y = p1.y - p0.y
+	const v1x = p2.x - p0.x, v1y = p2.y - p0.y
+	const d00 = v0x * v0x + v0y * v0y
+	const d01 = v0x * v1x + v0y * v1y
+	const d11 = v1x * v1x + v1y * v1y
+	const denom = d00 * d11 - d01 * d01
+	if (denom == 0)
+		return
+	const invDenom = 1.0 / denom
+
+	const p0c = parse_color(p0.color)
+	const p1c = parse_color(p1.color)
+	const p2c = parse_color(p2.color)
+
+	const data = ctx.getImageData(xmin, ymin, xmax - xmin, ymax - ymin)
+	for (var y = ymin; y < ymax; y++)
+	{
+		for (var x = xmin; x < xmax; x++)
+		{
+			const v2x = x - p0.x, v2y = y - p0.y
+			const d20 = v2x * v0x + v2y * v0y
+			const d21 = v2x * v1x + v2y * v1y
+			const v = (d11 * d20 - d01 * d21) * invDenom
+			const w = (d00 * d21 - d01 * d20) * invDenom
+			const u = 1.0 - v - w
+			if (v < 0 || v > 1 || w < 0 || w > 1 || u < 0)
+				continue
+
+			const tricol =
+			[
+				p0c[0] * u + p1c[0] * v + p2c[0] * w,
+				p0c[1] * u + p1c[1] * v + p2c[1] * w,
+				p0c[2] * u + p1c[2] * v + p2c[2] * w,
+				255
+			]
+			var pxoff = ((x - xmin) + (y - ymin) * data.width) * 4
+			for (var i = 0; i < 4; i++)
+				data.data[pxoff + i] = tricol[i]
+		}
+	}
+	ctx.putImageData(data, xmin, ymin)
+}
+
+function redraw()
+{
+	var canvas = el("preview")
+	var ctx = canvas.getContext("2d")
+	ctx.clearRect(0, 0, 640, 480)
+
+	// draw triangles
+	for (var i = 0; i < tri.tris.length; i++)
+	{
+		const t = tri.tris[i]
+		const p0p = tri.points[t.p0]
+		const p1p = tri.points[t.p1]
+		const p2p = tri.points[t.p2]
+		draw_tri(ctx, p0p, p1p, p2p)
+	}
+
+	// draw edges
+	ctx.strokeStyle = "rgba(0,0,0,0.5)"
+	ctx.beginPath()
+	for (var i = 0; i < tri.tris.length; i++)
+	{
+		const t = tri.tris[i]
+		const p0p = tri.points[t.p0]
+		const p1p = tri.points[t.p1]
+		const p2p = tri.points[t.p2]
+		ctx.moveTo(p0p.x, p0p.y)
+		ctx.lineTo(p1p.x, p1p.y)
+		ctx.lineTo(p2p.x, p2p.y)
+		ctx.closePath()
+	}
+	ctx.stroke()
+
+	// draw points
+	ctx.fillStyle = "rgba(0,0,0,0.5)"
+	for (var i = 0; i < tri.inpts.length; i++)
+	{
+		const p = tri.inpts[i]
+		ctx.beginPath()
+		ctx.arc(p.x, p.y, 3, 0, Math.PI * 2)
+		ctx.fill()
+	}
+	for (var i = 0; i < tri.inpts.length; i++)
+	{
+		const p = tri.inpts[i]
+		ctx.fillStyle = p.color
+		ctx.beginPath()
+		ctx.arc(p.x, p.y, 2, 0, Math.PI * 2)
+		ctx.fill()
+	}
+
+	// draw debug info
+	for (var i = 0; i < tri.debug.length; i++)
+	{
+		const D = tri.debug[i]
+		switch (D.type)
+		{
+		case "tri":
+			ctx.strokeStyle = "rgba(255,0,0,0.5)"
+			ctx.beginPath()
+			ctx.moveTo(tri.points[D.p0].x, tri.points[D.p0].y)
+			ctx.lineTo(tri.points[D.p1].x, tri.points[D.p1].y)
+			ctx.lineTo(tri.points[D.p2].x, tri.points[D.p2].y)
+			ctx.closePath()
+			ctx.stroke()
+			break
+		case "quad":
+			ctx.strokeStyle = "rgba(255,0,0,0.5)"
+			ctx.beginPath()
+			ctx.moveTo(tri.points[D.p0].x, tri.points[D.p0].y)
+			ctx.lineTo(tri.points[D.p1].x, tri.points[D.p1].y)
+			ctx.lineTo(tri.points[D.p2].x, tri.points[D.p2].y)
+			ctx.lineTo(tri.points[D.p3].x, tri.points[D.p3].y)
+			ctx.closePath()
+			ctx.stroke()
+			break
+		case "edge0":
+			ctx.strokeStyle = "rgba(0,0,255,0.5)"
+			ctx.beginPath()
+			ctx.moveTo(tri.points[D.p0].x, tri.points[D.p0].y)
+			ctx.lineTo(tri.points[D.p1].x, tri.points[D.p1].y)
+			ctx.stroke()
+			break
+		case "edge1":
+			ctx.strokeStyle = "rgba(0,255,0,0.5)"
+			ctx.beginPath()
+			ctx.moveTo(tri.points[D.p0].x, tri.points[D.p0].y)
+			ctx.lineTo(tri.points[D.p1].x, tri.points[D.p1].y)
+			ctx.stroke()
+			break
+		}
+	}
+}
+
+function redraw2()
+{
+	var canvas = el("preview2")
+	var ctx = canvas.getContext("2d")
+	ctx.clearRect(0, 0, 640, 480)
+
+	// draw walk
+	var numSteps = 0
+	if (tri.tstx !== null && tri.tris.length)
+	{
+		const P = { x: tri.tstx, y: tri.tsty }
+
+		ctx.strokeStyle = "rgba(255,0,0,0.9)"
+		ctx.beginPath()
+
+		// find triangle enclosing point
+		var ptid = undefined
+		var tid = 0
+		while (tid >= 0)
+		{
+			const T = tri.tris[tid]
+			ctx.moveTo(tri.points[T.p0].x, tri.points[T.p0].y)
+			ctx.lineTo(tri.points[T.p1].x, tri.points[T.p1].y)
+			ctx.lineTo(tri.points[T.p2].x, tri.points[T.p2].y)
+			ctx.closePath()
+
+			const nt = tri._PickNextTri(P, tid, ptid)
+			if (nt === tid)
+				break
+			ptid = tid
+			tid = nt
+			numSteps++
+		}
+
+		ctx.stroke()
+	}
+
+	// overlay info
+	ctx.font = "12px sans-serif"
+	ctx.fillStyle = "#000"
+	ctx.textBaseline = "top"
+	var y = 0
+	ctx.fillText("Info:", 0, y)
+	y += 12
+	ctx.fillText("- points: " + tri.inpts.length, 0, y)
+	y += 12
+	ctx.fillText("- triangles: " + tri.tris.length, 0, y)
+	y += 12
+	ctx.fillText("- flips: " + tri.numFlips + " (attempted: " + tri.numAttFlips + ")", 0, y)
+	y += 12
+	y += 12
+	if (tri.tstx !== null)
+	{
+		ctx.fillText("walk steps=" + numSteps, 0, y)
+		y += 12
+	}
+}
+
+function update(skip_dup)
+{
+	const dupq = el("opt_dup").value
+	const dupo = el("opt_dpo").value
+	if (!skip_dup && dupq > 0)
+	{
+		for (var i = 0, len = tri.inpts.length; i < len; i++)
+		{
+			if (Math.random() < dupq)
+			{
+				tri.inpts.push
+				({
+					x: tri.inpts[i].x + (Math.random() * 2 - 1) * dupo,
+					y: tri.inpts[i].y + (Math.random() * 2 - 1) * dupo,
+					color: tri.inpts[i].color,
+				})
+			}
+		}
+	}
+
+	try
+	{
+		tri.Recalculate()
+	}
+	catch (ex)
+	{
+		console.log(ex)
+	}
+	redraw()
+	redraw2()
+}
+	</script>
+</body>
