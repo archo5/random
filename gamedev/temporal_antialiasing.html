@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta content="text/html;charset=utf-8" http-equiv="Content-Type">
+	<meta content="utf-8" http-equiv="encoding">
+	<style type="text/css">
+html { font-family: sans-serif; font-size: 14px; }
+.previewBlock { display: inline-block; width: 1024px; height: 576px; position: relative; border: 1px solid #CCC; background: #505; }
+.previewBlock canvas { position: absolute; }
+label { width: 300px; display: inline-block; }
+input[type="range"] { width: 300px; }
+	</style>
+</head>
+<body>
+	<h1>Temporal Anti-aliasing</h1>
+	<div class="previewBlock">
+		<canvas id="preview" width="1024" height="576"></canvas>
+	</div>
+	<script id="mvp-col-vs" type="text/glsl">
+uniform mat4 uModelViewProjMtx;
+uniform vec4 uColor;
+attribute vec3 aPosition;
+attribute vec4 aColor;
+varying vec4 vColor;
+void main()
+{
+	gl_Position = vec4(aPosition, 1) * uModelViewProjMtx;
+	vColor = aColor * uColor;
+}
+	</script>
+	<script id="mvp-col-ps" type="text/glsl">
+precision highp float;
+varying vec4 vColor;
+void main()
+{
+	gl_FragColor = vColor;
+}
+	</script>
+	<script id="blit-vs" type="text/glsl">
+attribute vec3 aPosition;
+attribute vec4 aColor;
+varying vec2 vUV;
+void main()
+{
+	gl_Position = vec4(aPosition, 1);
+	vUV = aPosition.xy * 0.5 + 0.5;
+}
+	</script>
+	<script id="blit-ps" type="text/glsl">
+precision highp float;
+uniform sampler2D uTexture;
+varying vec2 vUV;
+void main()
+{
+	gl_FragColor = texture2D(uTexture, vUV);
+}
+	</script>
+	<script id="blit-taa-ps" type="text/glsl">
+precision highp float;
+uniform sampler2D uTexture;
+uniform sampler2D uTxAccum;
+uniform vec2 uPixelSize;
+varying vec2 vUV;
+// luma R/G influence ratio: R*3.36406...=G
+//const vec3 lumaCoeffs = vec3(0.2126, 0.7152, 0.0722);
+const vec3 lumaCoeffs = vec3(0.2126, 0.7152, 0.0); // debug
+void main()
+{
+	// take a weighted 3x3 sample from both textures
+	vec2 txa = uPixelSize * 1.85;
+	vec2 txb = vec2(txa.x, -txa.y);
+
+	float sc00 = pow(dot(texture2D(uTexture, vUV - txa).rgb, lumaCoeffs), 0.5);
+	float sc10 = pow(dot(texture2D(uTexture, vUV - txb).rgb, lumaCoeffs), 0.5);
+	float sc11 = pow(dot(texture2D(uTexture, vUV + txa).rgb, lumaCoeffs), 0.5);
+	float sc01 = pow(dot(texture2D(uTexture, vUV + txb).rgb, lumaCoeffs), 0.5);
+	float mincurrluma = min(min(sc00, sc10), min(sc11, sc01));
+	float maxcurrluma = max(max(sc00, sc10), max(sc11, sc01));
+	//float avgcurrluma = (sc00 + sc10 + sc11 + sc01) * 0.25;
+
+	float sp00 = pow(dot(texture2D(uTxAccum, vUV - txa).rgb, lumaCoeffs), 0.5);
+	float sp10 = pow(dot(texture2D(uTxAccum, vUV - txb).rgb, lumaCoeffs), 0.5);
+	float sp11 = pow(dot(texture2D(uTxAccum, vUV + txa).rgb, lumaCoeffs), 0.5);
+	float sp01 = pow(dot(texture2D(uTxAccum, vUV + txb).rgb, lumaCoeffs), 0.5);
+	float minprevluma = min(min(sp00, sp10), min(sp11, sp01));
+	float maxprevluma = max(max(sp00, sp10), max(sp11, sp01));
+	//float avgprevluma = (sp00 + sp10 + sp11 + sp01) * 0.25;
+
+	// calculate final blend factor
+	//float q = pow(abs(avgcurrluma - avgprevluma), 0.2);
+	float q = pow(clamp((abs(mincurrluma - minprevluma) + abs(maxcurrluma - maxprevluma)) * 0.5, 0.0, 1.0), 0.2);
+	float bf = mix(0.125, 1.0, q);
+
+	// blend previous/current using factor
+	vec4 curr = pow(texture2D(uTexture, vUV), vec4(2.0, 2.0, 2.0, 1.0));
+	//curr.b = abs(avgcurrluma - avgprevluma); // debug
+	//curr.b = q; // debug
+	vec4 prev = pow(texture2D(uTxAccum, vUV), vec4(2.0, 2.0, 2.0, 1.0));
+	gl_FragColor = pow(mix(prev, curr, bf), vec4(0.5, 0.5, 0.5, 1.0));
+}
+	</script>
+	<script type="text/javascript">
+function el(id) { return document.getElementById(id) }
+function src(id) { return el(id).textContent }
+
+
+
+function v3dot(a, b)
+{
+	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+function v3cross(a, b)
+{
+	return [
+		a[1] * b[2] - b[1] * a[2],
+		a[2] * b[0] - b[2] * a[0],
+		a[0] * b[1] - b[0] * a[1],
+	]
+}
+function v3scale(v, s)
+{
+	return [v[0] * s, v[1] * s, v[2] * s]
+}
+function v3normalize(v)
+{
+	var len = v3dot(v, v)
+	if (len == 0)
+		return v
+	return v3scale(v, 1.0 / Math.sqrt(len))
+}
+function v3sub(a, b)
+{
+	return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+function mat4translate(x, y, z)
+{
+	return [
+		1, 0, 0, x,
+		0, 1, 0, y,
+		0, 0, 1, z,
+		0, 0, 0, 1,
+	]
+}
+function mat4scale(s)
+{
+	return [
+		s, 0, 0, 0,
+		0, s, 0, 0,
+		0, 0, s, 0,
+		0, 0, 0, 1,
+	]
+}
+function mat4rotateZ(a)
+{
+	a *= Math.PI / 180
+	c = Math.cos(a)
+	s = Math.sin(a)
+	return [
+		c, -s, 0, 0,
+		s, c, 0, 0,
+		0, 0, 1, 0,
+		0, 0, 0, 1,
+	]
+}
+function mat4multiply(a, b)
+{
+	const out = []
+	for (var y = 0; y < 4; ++y)
+	{
+		for (var x = 0; x < 4; ++x)
+		{
+			var sum = 0
+			for (var i = 0; i < 4; ++i)
+			{
+				sum += a[y * 4 + i] * b[i * 4 + x]
+			}
+			out.push(sum)
+		}
+	}
+	return out
+}
+
+function lookAtMatrix(eye, at, up)
+{
+	var zaxis = v3normalize(v3sub(at, eye))
+	var xaxis = v3normalize(v3cross(up, zaxis))
+	var yaxis = v3cross(zaxis, xaxis)
+	return [
+		xaxis[0], xaxis[1], xaxis[2], -v3dot(xaxis, eye),
+		yaxis[0], yaxis[1], yaxis[2], -v3dot(yaxis, eye),
+		zaxis[0], zaxis[1], zaxis[2], -v3dot(zaxis, eye),
+		0, 0, 0, 1,
+	]
+}
+
+function perspectiveMatrix(fovY, aspect, znear, zfar)
+{
+	fovY *= Math.PI / 180
+	const yScale = 1.0 / Math.tan(fovY / 2)
+	const xScale = yScale / aspect
+	return [
+		xScale, 0, 0, 0,
+		0, yScale, 0, 0,
+		0, 0, zfar / (zfar - znear), -znear * zfar / (zfar - znear),
+		0, 0, 1, 0,
+	]
+}
+
+
+
+const VertexDecl_P3C4 =
+{
+	vertexSize: (3+4)*4,
+	attribs:
+	{
+		aPosition: [3, 0],
+		aColor:    [4, 12],
+	},
+}
+
+function createTriangleMesh(verts, indices, vertexDecl)
+{
+	const VB = gl.createBuffer()
+	gl.bindBuffer(gl.ARRAY_BUFFER, VB)
+	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW)
+
+	const IB = gl.createBuffer()
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, IB)
+	gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW)
+
+	return { VB: VB, IB: IB, indexCount: indices.length, vertexDecl: vertexDecl }
+}
+
+function applyVertexAttrib(mesh, prog, name)
+{
+	const pos = gl.getAttribLocation(prog, name)
+	if (pos == -1)
+		return
+
+	var vdInfo = mesh.vertexDecl.attribs[name]
+	if (vdInfo)
+	{
+		gl.vertexAttribPointer(pos, vdInfo[0], gl.FLOAT, false, mesh.vertexDecl.vertexSize, vdInfo[1])
+		gl.enableVertexAttribArray(pos)
+	}
+	else
+		gl.disableVertexAttribArray(pos)
+}
+
+function drawTriangleMesh(mesh, prog)
+{
+	gl.bindBuffer(gl.ARRAY_BUFFER, mesh.VB)
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.IB)
+
+	applyVertexAttrib(mesh, prog, "aPosition")
+	applyVertexAttrib(mesh, prog, "aColor")
+	//applyVertexAttrib(mesh, prog, "aTexCoord0")
+
+	gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0)
+}
+
+function loadShader(type, source)
+{
+	const shader = gl.createShader(type)
+	gl.shaderSource(shader, source)
+	gl.compileShader(shader)
+	if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+	{
+		console.log("[GL] shader compilation failed: " + gl.getShaderInfoLog(shader))
+		gl.deleteShader(shader)
+		return null
+	}
+	return shader
+}
+
+function initShaderProgram(vsSource, fsSource, samplerMap)
+{
+	const vertexShader = loadShader(gl.VERTEX_SHADER, vsSource)
+	const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource)
+	const shaderProgram = gl.createProgram()
+	gl.attachShader(shaderProgram, vertexShader)
+	gl.attachShader(shaderProgram, fragmentShader)
+	gl.linkProgram(shaderProgram)
+	if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS))
+	{
+		console.log("[GL] shader program linkage failed: " + gl.getProgramInfoLog(shaderProgram))
+		return null
+	}
+	if (samplerMap)
+	{
+		gl.useProgram(shaderProgram)
+		for (var samplerName in samplerMap)
+		{
+			gl.uniform1i(gl.getUniformLocation(shaderProgram, samplerName), samplerMap[samplerName])
+		}
+	}
+	return shaderProgram
+}
+
+function shaderProgramLinkInputs(p, modelMtx, color)
+{
+	gl.useProgram(p)
+
+	if (modelMtx)
+	{
+		const canvas = el("preview")
+		const asp = canvas.width / canvas.height
+		const vm = lookAtMatrix(GLCameraPos, GLCameraTarget, [0, 0, 1])
+		const pm = perspectiveMatrix(60, asp, 0.1, 1000)
+		const om = mat4translate(GLPixelOffset[0] / canvas.width * 2, GLPixelOffset[1] / canvas.height * 2, 0)
+		const opm = mat4multiply(om, pm)
+		const vpm = mat4multiply(opm, vm)
+		const mvpm = mat4multiply(vpm, modelMtx)
+		gl.uniformMatrix4fv(gl.getUniformLocation(p, "uModelViewProjMtx"), false, mvpm)
+	}
+	if (color)
+		gl.uniform4fv(gl.getUniformLocation(p, "uColor"), color)
+}
+
+
+
+
+function FrameBufferObject()
+{
+	const canvas = el("preview")
+	const W = canvas.width, H = canvas.height
+	this.tex = gl.createTexture()
+	gl.bindTexture(gl.TEXTURE_2D, this.tex)
+
+	gl.texImage2D(gl.TEXTURE_2D,
+		/*level*/ 0,
+		/*internalFormat*/ gl.RGBA,
+		W, H, 0,
+		/*format*/ gl.RGBA,
+		/*type*/ gl.UNSIGNED_BYTE,
+		/*data*/ null)
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+
+	this.fb = gl.createFramebuffer()
+	gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb)
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tex, /*level*/0)
+
+	gl.clearColor(0, 0, 0, 1)
+	gl.clear(gl.COLOR_BUFFER_BIT/* | gl.DEPTH_BUFFER_BIT*/)
+}
+
+FrameBufferObject.prototype.bindTexture = function(at)
+{
+	gl.activeTexture(gl.TEXTURE0 + at)
+	gl.bindTexture(gl.TEXTURE_2D, this.tex)
+}
+
+FrameBufferObject.prototype.bindFramebuffer = function()
+{
+	gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb)
+}
+
+
+
+
+function init()
+{
+	const canvas = el("preview")
+	var gl = canvas.getContext("webgl", { antialias: false })
+	if (!gl)
+		gl = canvas.getContext("experimental-webgl", { antialias: false })
+	window.gl = gl
+
+	gl.disable(gl.CULL_FACE);
+	gl.cullFace(gl.BACK);
+
+	window.GLGeomShader = initShaderProgram(src("mvp-col-vs"), src("mvp-col-ps"))
+	window.GLBlitShader = initShaderProgram(src("blit-vs"), src("blit-ps"))
+	window.GLTAAShader = initShaderProgram(src("blit-vs"), src("blit-taa-ps"), { uTexture: 0, uTxAccum: 1 })
+
+	window.GLCameraPos = [0, -0.01, 2]
+	window.GLCameraTarget = [0, 0, 0]
+	window.GLPixelOffset = [0, 0]
+
+	// generate AA offset from rotated Bayer matrix (row major)
+	const bayer =
+	[
+		0, 8, 2, 10,
+		12, 4, 14, 6,
+		3, 11, 1, 9,
+		15, 7, 13, 5,
+	]
+	const aaofs = []
+	const adj = 1/8 - 1/2
+	const rc = Math.cos(5 / 180 * Math.PI)
+	const rs = Math.sin(5 / 180 * Math.PI)
+	for (var i = 0; i < 16; i++)
+	{
+		const x = (i % 4) / 4 + adj
+		const y = i / 4 / 4 + adj
+		const rx = x * rc - y * rs
+		const ry = x * rs + y * rc
+		aaofs.push([rx, ry, bayer[i]])
+	}
+	aaofs.sort((a, b) => a[2] < b[2])
+	window.GLAAOffsets = aaofs
+
+	window.GLInputFBO = new FrameBufferObject()
+	window.GLAccum0FBO = new FrameBufferObject()
+	window.GLAccum1FBO = new FrameBufferObject()
+
+	window.ang = 0
+	window.aaoffid = 0
+
+	// base mesh
+	{
+		const vertices =
+		[
+			-1, -1, 0, 1, 1, 1, 1,
+			 1, -1, 0, 1, 1, 1, 1,
+			 1,  1, 0, 1, 1, 1, 1,
+			-1,  1, 0, 1, 1, 1, 1,
+		]
+		const indices = [0, 1, 2, 2, 3, 0]
+
+		window.GLBaseMesh = createTriangleMesh(vertices, indices, VertexDecl_P3C4)
+	}
+
+	// base mesh (with gradient)
+	{
+		const vertices =
+		[
+			-1, -1, 0, 0, 0, 0, 1,
+			 1, -1, 0, 1, 1, 1, 1,
+			 1,  1, 0, 1, 1, 1, 1,
+			-1,  1, 0, 0, 0, 0, 1,
+		]
+		const indices = [0, 1, 2, 2, 3, 0]
+
+		window.GLBaseMeshGrad = createTriangleMesh(vertices, indices, VertexDecl_P3C4)
+	}
+
+	// star mesh
+	{
+		const vertices = [0, 0, 0, 1, 1, 1, 1]
+		const indices = []
+		for (var i = 0; i < 10; i++)
+		{
+			const r = i % 2 ? 0.95 : 0.35
+			const a = i / 10 * Math.PI * 2
+			const c = Math.cos(a)
+			const s = Math.sin(a)
+			vertices.push(s * r, -c * r, 0, 1, 1, 1, 1)
+			if (i > 0)
+				indices.push(0, i, i + 1)
+		}
+		indices.push(0, i, 1)
+
+		window.GLStarMesh = createTriangleMesh(vertices, indices, VertexDecl_P3C4)
+	}
+}
+
+function redraw()
+{
+	const canvas = el("preview")
+
+	window.ang += 1
+	window.aaoffid += 1
+	window.aaoffid %= 16
+	window.GLPixelOffset = window.GLAAOffsets[Math.floor(aaoffid)]
+
+	mS = mat4scale(0.5)
+
+	this.GLInputFBO.bindFramebuffer()
+
+	gl.clearColor(0.4, 0.5, 0.5, 1)
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+	gl.viewport(0, 0, canvas.width, canvas.height)
+
+	// BLACK/WHITE
+	// part 1-1
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, 0.5, 0), mS), [1,1,1,1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [0.5, 0.5, 0.5, 1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// part 1-2
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, 0.5, 0), mS), [1,1,1,1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, 0.5, 0.01), mS), [0.5, 0.5, 0.5, 1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// part 1-3
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, 0.5, 0), mS), [0,0,0,1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [1,1,1,1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// part 1-4
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, 0.5, 0), mS), [0,0,0,1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, 0.5, 0.01), mS), [1,1,1,1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// LUMA-HACKING
+	const lh1R = 0.9
+	const lh1G = lh1R / 3.36406 * 2 // gradient
+	// part 2-1
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, -0.5, 0), mS), [0, lh1G, 0, 1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [lh1R, 0, 0, 1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// part 2-2
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, -0.5, 0), mS), [0, lh1G, 0, 1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, -0.5, 0.01), mS), [lh1R, 0, 0, 1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// part 2-3
+	const lh2R = 0.9 // gradient
+	const lh2G = lh2R / 3.36406 / 2
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, -0.5, 0), mS), [lh2R, 0, 0, 1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [0, lh2G, 0, 1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// part 2-4
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, -0.5, 0), mS), [lh2R, 0, 0, 1])
+	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
+	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, -0.5, 0.01), mS), [0, lh2G, 0, 1])
+	drawTriangleMesh(GLStarMesh, GLGeomShader)
+
+	// accumulate
+	GLAccum1FBO.bindFramebuffer()
+	this.GLInputFBO.bindTexture(0)
+	this.GLAccum0FBO.bindTexture(1)
+	shaderProgramLinkInputs(GLTAAShader)
+	gl.uniform2fv(gl.getUniformLocation(GLTAAShader, "uPixelSize"), [1 / canvas.width, 1 / canvas.height])
+	drawTriangleMesh(GLBaseMesh, GLTAAShader)
+
+	// present
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+	this.GLAccum1FBO.bindTexture(0)
+	shaderProgramLinkInputs(GLBlitShader)
+	drawTriangleMesh(GLBaseMesh, GLBlitShader)
+
+	// flip
+	{
+		var tmp = this.GLAccum1FBO
+		this.GLAccum1FBO = this.GLAccum0FBO
+		this.GLAccum0FBO = tmp
+	}
+
+	requestAnimationFrame(redraw)
+}
+
+init()
+requestAnimationFrame(redraw)
+
+	</script>
+</body>
