@@ -36,6 +36,36 @@ void main()
 	gl_FragColor = vColor;
 }
 	</script>
+	<script id="mvp-move-vs" type="text/glsl">
+uniform mat4 uModelViewProjMtx;
+uniform mat4 uPrevModelViewProjMtx;
+attribute vec3 aPosition;
+varying vec3 vLocalPos;
+varying vec4 vCurrClipPos;
+varying vec4 vPrevClipPos;
+void main()
+{
+//	vLocalPos = aPosition;
+	gl_Position = vCurrClipPos = vec4(aPosition, 1) * uModelViewProjMtx;
+	vPrevClipPos = vec4(aPosition, 1) * uPrevModelViewProjMtx;
+}
+	</script>
+	<script id="mvp-move-ps" type="text/glsl">
+precision highp float;
+uniform mat4 uModelViewProjMtx;
+uniform mat4 uPrevModelViewProjMtx;
+varying vec3 vLocalPos;
+varying vec4 vCurrClipPos;
+varying vec4 vPrevClipPos;
+void main()
+{
+//	vec4 curr = vec4(vLocalPos, 1) * uModelViewProjMtx;
+//	vec4 prev = vec4(vLocalPos, 1) * uPrevModelViewProjMtx;
+//	vec3 pmove = prev.xyz / prev.w - curr.xyz / curr.w;
+	vec3 move = vPrevClipPos.xyz / vPrevClipPos.w - vCurrClipPos.xyz / vCurrClipPos.w;
+	gl_FragColor = vec4(move, 1);
+}
+	</script>
 	<script id="blit-vs" type="text/glsl">
 attribute vec3 aPosition;
 attribute vec4 aColor;
@@ -55,10 +85,23 @@ void main()
 	gl_FragColor = texture2D(uTexture, vUV);
 }
 	</script>
+	<script id="blit-mvdbg-ps" type="text/glsl">
+precision highp float;
+uniform sampler2D uTexture;
+uniform sampler2D uTxAccum;
+uniform sampler2D uTxMoVec;
+varying vec2 vUV;
+void main()
+{
+	vec2 uv = vUV + texture2D(uTxMoVec, vUV).xy * 0.5;
+	gl_FragColor = texture2D(uTxAccum, uv);
+}
+	</script>
 	<script id="blit-taa-ps" type="text/glsl">
 precision highp float;
 uniform sampler2D uTexture;
 uniform sampler2D uTxAccum;
+uniform sampler2D uTxMoVec;
 uniform vec2 uPixelSize;
 varying vec2 vUV;
 // luma R/G influence ratio: R*3.36406...=G
@@ -78,10 +121,11 @@ void main()
 	float maxcurrluma = max(max(sc00, sc10), max(sc11, sc01));
 	//float avgcurrluma = (sc00 + sc10 + sc11 + sc01) * 0.25;
 
-	float sp00 = pow(dot(texture2D(uTxAccum, vUV - txa).rgb, lumaCoeffs), 0.5);
-	float sp10 = pow(dot(texture2D(uTxAccum, vUV - txb).rgb, lumaCoeffs), 0.5);
-	float sp11 = pow(dot(texture2D(uTxAccum, vUV + txa).rgb, lumaCoeffs), 0.5);
-	float sp01 = pow(dot(texture2D(uTxAccum, vUV + txb).rgb, lumaCoeffs), 0.5);
+	vec2 pUV = vUV + texture2D(uTxMoVec, vUV).xy * 0.5;
+	float sp00 = pow(dot(texture2D(uTxAccum, pUV - txa).rgb, lumaCoeffs), 0.5);
+	float sp10 = pow(dot(texture2D(uTxAccum, pUV - txb).rgb, lumaCoeffs), 0.5);
+	float sp11 = pow(dot(texture2D(uTxAccum, pUV + txa).rgb, lumaCoeffs), 0.5);
+	float sp01 = pow(dot(texture2D(uTxAccum, pUV + txb).rgb, lumaCoeffs), 0.5);
 	float minprevluma = min(min(sp00, sp10), min(sp11, sp01));
 	float maxprevluma = max(max(sp00, sp10), max(sp11, sp01));
 	//float avgprevluma = (sp00 + sp10 + sp11 + sp01) * 0.25;
@@ -90,12 +134,13 @@ void main()
 	//float q = pow(abs(avgcurrluma - avgprevluma), 0.2);
 	float q = pow(clamp((abs(mincurrluma - minprevluma) + abs(maxcurrluma - maxprevluma)) * 0.5, 0.0, 1.0), 0.2);
 	float bf = mix(0.125, 1.0, q);
+	//bf = 1.0;//debug
 
 	// blend previous/current using factor
 	vec4 curr = pow(texture2D(uTexture, vUV), vec4(2.0, 2.0, 2.0, 1.0));
 	//curr.b = abs(avgcurrluma - avgprevluma); // debug
 	//curr.b = q; // debug
-	vec4 prev = pow(texture2D(uTxAccum, vUV), vec4(2.0, 2.0, 2.0, 1.0));
+	vec4 prev = pow(texture2D(uTxAccum, pUV), vec4(2.0, 2.0, 2.0, 1.0));
 	gl_FragColor = pow(mix(prev, curr, bf), vec4(0.5, 0.5, 0.5, 1.0));
 }
 	</script>
@@ -298,21 +343,24 @@ function initShaderProgram(vsSource, fsSource, samplerMap)
 	return shaderProgram
 }
 
-function shaderProgramLinkInputs(p, modelMtx, color)
+window.prevVPM = null
+function shaderProgramLinkInputs(p, modelMtx, color, prevModelMtx)
 {
 	gl.useProgram(p)
 
 	if (modelMtx)
 	{
-		const canvas = el("preview")
-		const asp = canvas.width / canvas.height
-		const vm = lookAtMatrix(GLCameraPos, GLCameraTarget, [0, 0, 1])
-		const pm = perspectiveMatrix(60, asp, 0.1, 1000)
-		const om = mat4translate(GLPixelOffset[0] / canvas.width * 2, GLPixelOffset[1] / canvas.height * 2, 0)
-		const opm = mat4multiply(om, pm)
-		const vpm = mat4multiply(opm, vm)
-		const mvpm = mat4multiply(vpm, modelMtx)
+		const mvpm = mat4multiply(mat4multiply(OffMtx, VPM), modelMtx)
 		gl.uniformMatrix4fv(gl.getUniformLocation(p, "uModelViewProjMtx"), false, mvpm)
+	}
+	if (prevModelMtx === false)
+		prevModelMtx = modelMtx
+	if (prevModelMtx)
+	{
+		const mvpm = mat4multiply(mat4multiply(OffMtx, prevVPM ? prevVPM : VPM), prevModelMtx)
+		const loc = gl.getUniformLocation(p, "uPrevModelViewProjMtx")
+		if (loc !== null)
+			gl.uniformMatrix4fv(loc, false, mvpm)
 	}
 	if (color)
 		gl.uniform4fv(gl.getUniformLocation(p, "uColor"), color)
@@ -321,27 +369,36 @@ function shaderProgramLinkInputs(p, modelMtx, color)
 
 
 
-function FrameBufferObject()
+function FrameBufferObject(useFloatFmt)
 {
 	const canvas = el("preview")
 	const W = canvas.width, H = canvas.height
 	this.tex = gl.createTexture()
 	gl.bindTexture(gl.TEXTURE_2D, this.tex)
 
+	var ifmt = gl.RGBA
+	var fmt = gl.RGBA
+	var type = useFloatFmt ? gl.FLOAT : gl.UNSIGNED_BYTE
+
 	gl.texImage2D(gl.TEXTURE_2D,
 		/*level*/ 0,
-		/*internalFormat*/ gl.RGBA,
+		/*internalFormat*/ ifmt,
 		W, H, 0,
-		/*format*/ gl.RGBA,
-		/*type*/ gl.UNSIGNED_BYTE,
+		/*format*/ fmt,
+		/*type*/ type,
 		/*data*/ null)
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, useFloatFmt ? gl.NEAREST : gl.LINEAR)
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, useFloatFmt ? gl.NEAREST : gl.LINEAR)
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 
 	this.fb = gl.createFramebuffer()
 	gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb)
 	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tex, /*level*/0)
+
+	const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER)
+	if (status != gl.FRAMEBUFFER_COMPLETE)
+		throw status
 
 	gl.clearColor(0, 0, 0, 1)
 	gl.clear(gl.COLOR_BUFFER_BIT/* | gl.DEPTH_BUFFER_BIT*/)
@@ -369,16 +426,20 @@ function init()
 		gl = canvas.getContext("experimental-webgl", { antialias: false })
 	window.gl = gl
 
+	// EXT_color_buffer_half_float returns extension object but in practice does not work (Chromium+Firefox)
+	// therefore we are forced to use plain floats that take 2x more memory
+	window.GLF = gl.getExtension("OES_texture_float")
+	if (GLF === null)
+		throw "error: OES_texture_float required"
+
 	gl.disable(gl.CULL_FACE);
 	gl.cullFace(gl.BACK);
 
 	window.GLGeomShader = initShaderProgram(src("mvp-col-vs"), src("mvp-col-ps"))
+	window.GLMoVeShader = initShaderProgram(src("mvp-move-vs"), src("mvp-move-ps"))
 	window.GLBlitShader = initShaderProgram(src("blit-vs"), src("blit-ps"))
-	window.GLTAAShader = initShaderProgram(src("blit-vs"), src("blit-taa-ps"), { uTexture: 0, uTxAccum: 1 })
-
-	window.GLCameraPos = [0, -0.01, 2]
-	window.GLCameraTarget = [0, 0, 0]
-	window.GLPixelOffset = [0, 0]
+	window.GLMVDBGShader = initShaderProgram(src("blit-vs"), src("blit-mvdbg-ps"), { uTexture: 0, uTxAccum: 1, uTxMoVec: 2 })
+	window.GLTAAShader = initShaderProgram(src("blit-vs"), src("blit-taa-ps"), { uTexture: 0, uTxAccum: 1, uTxMoVec: 2 })
 
 	// generate AA offset from rotated Bayer matrix (row major)
 	const bayer =
@@ -403,12 +464,15 @@ function init()
 	aaofs.sort((a, b) => a[2] < b[2])
 	window.GLAAOffsets = aaofs
 
+	window.GLMoVecFBO = new FrameBufferObject(true)
 	window.GLInputFBO = new FrameBufferObject()
 	window.GLAccum0FBO = new FrameBufferObject()
 	window.GLAccum1FBO = new FrameBufferObject()
 
 	window.ang = 0
+	window.angspeed = 1
 	window.aaoffid = 0
+	window.frameid = 0
 
 	// base mesh
 	{
@@ -458,96 +522,140 @@ function init()
 	}
 }
 
-function redraw()
+function renderScene(motionVectors)
 {
-	const canvas = el("preview")
-
-	window.ang += 1
-	window.aaoffid += 1
-	window.aaoffid %= 16
-	window.GLPixelOffset = window.GLAAOffsets[Math.floor(aaoffid)]
+	const shader = motionVectors ? GLMoVeShader : GLGeomShader
 
 	mS = mat4scale(0.5)
 
-	this.GLInputFBO.bindFramebuffer()
-
-	gl.clearColor(0.4, 0.5, 0.5, 1)
-	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-	gl.viewport(0, 0, canvas.width, canvas.height)
-
 	// BLACK/WHITE
 	// part 1-1
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, 0.5, 0), mS), [1,1,1,1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [0.5, 0.5, 0.5, 1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(1.5, 0.5, 0), mS), [1,1,1,1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader,
+		mat4multiply(mat4translate(1.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [0.5, 0.5, 0.5, 1],
+		mat4multiply(mat4translate(1.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang - angspeed))))
+	drawTriangleMesh(GLStarMesh, shader)
 
 	// part 1-2
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, 0.5, 0), mS), [1,1,1,1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, 0.5, 0.01), mS), [0.5, 0.5, 0.5, 1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(0.5, 0.5, 0), mS), [1,1,1,1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(0.5, 0.5, 0.01), mS), [0.5, 0.5, 0.5, 1], false)
+	drawTriangleMesh(GLStarMesh, shader)
 
 	// part 1-3
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, 0.5, 0), mS), [0,0,0,1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [1,1,1,1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(-0.5, 0.5, 0), mS), [0,0,0,1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader,
+		mat4multiply(mat4translate(-0.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [1,1,1,1],
+		mat4multiply(mat4translate(-0.5, 0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang - angspeed))))
+	drawTriangleMesh(GLStarMesh, shader)
 
 	// part 1-4
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, 0.5, 0), mS), [0,0,0,1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, 0.5, 0.01), mS), [1,1,1,1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(-1.5, 0.5, 0), mS), [0,0,0,1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(-1.5, 0.5, 0.01), mS), [1,1,1,1], false)
+	drawTriangleMesh(GLStarMesh, shader)
 
 	// LUMA-HACKING
 	const lh1R = 0.9
 	const lh1G = lh1R / 3.36406 * 2 // gradient
 	// part 2-1
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, -0.5, 0), mS), [0, lh1G, 0, 1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(1.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [lh1R, 0, 0, 1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(1.5, -0.5, 0), mS), [0, lh1G, 0, 1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader,
+		mat4multiply(mat4translate(1.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [lh1R, 0, 0, 1],
+		mat4multiply(mat4translate(1.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang - angspeed))))
+	drawTriangleMesh(GLStarMesh, shader)
 
 	// part 2-2
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, -0.5, 0), mS), [0, lh1G, 0, 1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(0.5, -0.5, 0.01), mS), [lh1R, 0, 0, 1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(0.5, -0.5, 0), mS), [0, lh1G, 0, 1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(0.5, -0.5, 0.01), mS), [lh1R, 0, 0, 1], false)
+	drawTriangleMesh(GLStarMesh, shader)
 
 	// part 2-3
 	const lh2R = 0.9 // gradient
 	const lh2G = lh2R / 3.36406 / 2
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, -0.5, 0), mS), [lh2R, 0, 0, 1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-0.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [0, lh2G, 0, 1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(-0.5, -0.5, 0), mS), [lh2R, 0, 0, 1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader,
+		mat4multiply(mat4translate(-0.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang))), [0, lh2G, 0, 1],
+		mat4multiply(mat4translate(-0.5, -0.5, 0.01), mat4multiply(mS, mat4rotateZ(ang - angspeed))))
+	drawTriangleMesh(GLStarMesh, shader)
 
 	// part 2-4
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, -0.5, 0), mS), [lh2R, 0, 0, 1])
-	drawTriangleMesh(GLBaseMeshGrad, GLGeomShader)
-	shaderProgramLinkInputs(GLGeomShader, mat4multiply(mat4translate(-1.5, -0.5, 0.01), mS), [0, lh2G, 0, 1])
-	drawTriangleMesh(GLStarMesh, GLGeomShader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(-1.5, -0.5, 0), mS), [lh2R, 0, 0, 1], false)
+	drawTriangleMesh(GLBaseMeshGrad, shader)
+	shaderProgramLinkInputs(shader, mat4multiply(mat4translate(-1.5, -0.5, 0.01), mS), [0, lh2G, 0, 1], false)
+	drawTriangleMesh(GLStarMesh, shader)
+}
 
-	// accumulate
-	GLAccum1FBO.bindFramebuffer()
-	this.GLInputFBO.bindTexture(0)
-	this.GLAccum0FBO.bindTexture(1)
-	shaderProgramLinkInputs(GLTAAShader)
-	gl.uniform2fv(gl.getUniformLocation(GLTAAShader, "uPixelSize"), [1 / canvas.width, 1 / canvas.height])
-	drawTriangleMesh(GLBaseMesh, GLTAAShader)
-
-	// present
-	gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-	this.GLAccum1FBO.bindTexture(0)
-	shaderProgramLinkInputs(GLBlitShader)
-	drawTriangleMesh(GLBaseMesh, GLBlitShader)
-
-	// flip
+function redraw()
+{
+	window.frameid++
+	if (window.frameid % 1 == 0)
 	{
-		var tmp = this.GLAccum1FBO
-		this.GLAccum1FBO = this.GLAccum0FBO
-		this.GLAccum0FBO = tmp
+		window.ang += angspeed
+		window.aaoffid += 1
+		window.aaoffid %= 16
+
+		const canvas = el("preview")
+		gl.viewport(0, 0, canvas.width, canvas.height)
+
+		const asp = canvas.width / canvas.height
+
+		const vm = lookAtMatrix([0 + Math.sin(window.ang * 0.1) * 0.001, -0.01, 2], [0, 0, 0], [0, 0, 1])
+		const pm = perspectiveMatrix(60, asp, 0.1, 1000)
+		const vpm = mat4multiply(pm, vm)
+		window.VPM = vpm
+		const pixelOff = window.GLAAOffsets[Math.floor(aaoffid)]
+		window.OffMtx = mat4translate(pixelOff[0] / canvas.width * 2, pixelOff[1] / canvas.height * 2, 0)
+
+		// render motion vectors
+		GLMoVecFBO.bindFramebuffer()
+		gl.clearColor(0, 0, 0, 1)
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+		renderScene(true)
+
+		// render regular scene
+		GLInputFBO.bindFramebuffer()
+		gl.clearColor(0.4, 0.5, 0.5, 1)
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+		renderScene(false)
+
+		// accumulate
+		GLAccum1FBO.bindFramebuffer()
+		GLInputFBO.bindTexture(0)
+		GLAccum0FBO.bindTexture(1)
+		GLMoVecFBO.bindTexture(2)
+		shaderProgramLinkInputs(GLTAAShader)
+		gl.uniform2fv(gl.getUniformLocation(GLTAAShader, "uPixelSize"), [1 / canvas.width, 1 / canvas.height])
+		drawTriangleMesh(GLBaseMesh, GLTAAShader)
+
+		// present
+		gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+		GLAccum1FBO.bindTexture(0)
+		//GLInputFBO.bindTexture(0)
+		//GLMoVecFBO.bindTexture(0)
+		shaderProgramLinkInputs(GLBlitShader)
+		drawTriangleMesh(GLBaseMesh, GLBlitShader)
+
+		if (0) // debugging motion vectors
+		{
+			GLAccum0FBO.bindTexture(1)
+			GLMoVecFBO.bindTexture(2)
+			shaderProgramLinkInputs(GLMVDBGShader)
+			drawTriangleMesh(GLBaseMesh, GLMVDBGShader)
+		}
+
+		// flip
+		{
+			var tmp = this.GLAccum1FBO
+			this.GLAccum1FBO = this.GLAccum0FBO
+			this.GLAccum0FBO = tmp
+			window.prevVPM = VPM
+		}
 	}
 
 	requestAnimationFrame(redraw)
