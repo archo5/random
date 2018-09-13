@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<style type="text/css">
+html { font-family: sans-serif; font-size: 14px; }
+canvas { background: linear-gradient(to bottom, #ffffff 0%,#f6f6f6 100%); border: 1px solid #CCC; }
+.blk { display: block; }
+.iblk { display: inline-block; }
+	</style>
+</head>
+<body>
+	<h1 class="iblk">GJK/EPA</h1>
+	<div class="iblk">Test for intersection/distance by moving the mouse cursor.</div>
+	<canvas class="blk" id="preview" width="640" height="480" />
+	<script type="text/javascript">
+function el(id) { return document.getElementById(id); }
+
+el("preview").addEventListener("mousemove", function(event){ gjktest.tstx = event.offsetX; gjktest.tsty = event.offsetY; update(); })
+
+const kDegToRad = Math.PI / 180
+
+function lerp(a, b, s)
+{
+	return a * (1 - s) + b * s
+}
+
+function near(a, b, d)
+{
+	return Math.abs(a - b) < d
+}
+
+function dist(x1, y1, x2, y2)
+{
+	var dx = x1 - x2
+	var dy = y1 - y2
+	return Math.sqrt(dx * dx + dy * dy)
+}
+
+function dot(x1, y1, x2, y2)
+{
+	return x1 * x2 + y1 * y2
+}
+
+function vec2(x, y)
+{
+	return { x: x, y: y }
+}
+
+function vec2ADD(a, b) { return { x: a.x + b.x, y: a.y + b.y } }
+function vec2SUB(a, b) { return { x: a.x - b.x, y: a.y - b.y } }
+function vec2NEG(a) { return { x: -a.x, y: -a.y } }
+function vec2MULF(a, f) { return { x: a.x * f, y: a.y * f } }
+function vec2PERP(a) { return { x: -a.y, y: a.x } }
+function vec2DOT(a, b) { return a.x * b.x + a.y * b.y }
+function vec2LENGTH(a) { return Math.sqrt(vec2DOT(a, a)) }
+function vec2DIST(a, b) { return vec2LENGTH(vec2SUB(a, b)) }
+function vec2CROSS(a, b) { return a.x * b.y - b.x * a.y }
+function vec2NORM(a)
+{
+	const lsq = vec2DOT(a, a)
+	return lsq > 0 ? vec2MULF(a, 1.0 / Math.sqrt(lsq)) : vec2(0, 0)
+}
+
+
+
+function dbg_drawPoint(pt, stage2)
+{
+	ctx.strokeStyle = stage2 ? "rgb(0,0,0)" : "rgb(200,20,0)"
+	ctx.beginPath()
+	ctx.arc(pt.x, pt.y, 1, 0, Math.PI * 2)
+	ctx.stroke()
+}
+
+function dbg_drawPoly(poly, pos)
+{
+	if (!pos)
+		pos = { x: 0, y: 0 }
+	ctx.beginPath()
+	ctx.moveTo(poly[0].x + pos.x, poly[0].y + pos.y)
+	for (var i = 1; i < poly.length; i++)
+		ctx.lineTo(poly[i].x + pos.x, poly[i].y + pos.y)
+	ctx.closePath()
+	ctx.fillStyle = "rgba(200,100,0,0.3)"
+	ctx.fill()
+	ctx.strokeStyle = "rgb(200,100,0,0.3)"
+	ctx.stroke()
+}
+
+
+
+/*
+interface Convex
+{
+    func getSupport(d: vec2): vec2 -- returns support point in given direction
+}
+*/
+
+function Sphere(x, y, r) // : Convex
+{
+	this.x = x
+	this.y = y
+	this.r = r
+}
+
+Sphere.prototype.getSupport = function(d)
+{
+	return { x: this.x + d.x * this.r, y: this.y + d.y * this.r }
+}
+
+Sphere.prototype.draw = function(f, s, lwa)
+{
+	ctx.beginPath()
+	ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2)
+	if (f)
+	{
+		ctx.fillStyle = f
+		ctx.fill()
+	}
+	if (s)
+	{
+		ctx.lineWidth = lwa || 0
+		ctx.strokeStyle = s
+		ctx.stroke()
+		ctx.lineWidth = 1
+	}
+}
+
+function ConvexPoly(pts, margin) // : Convex
+{
+	this.points = pts
+	this.margin = margin || 0
+}
+
+ConvexPoly.prototype.getSupport = function(d)
+{
+	var bestpt = null
+	var bestdist = -9999999999
+	for (var i = 0; i < this.points.length; i++)
+	{
+		const curpt = this.points[i]
+		const curdist = vec2DOT(curpt, d)
+		if (curdist > bestdist)
+		{
+			bestdist = curdist
+			bestpt = curpt
+		}
+	}
+	return vec2ADD(bestpt, vec2MULF(d, this.margin))
+}
+
+ConvexPoly.prototype.draw = function(f, s, lwa)
+{
+	ctx.beginPath()
+	ctx.moveTo(this.points[0].x, this.points[0].y)
+	for (var i = 1; i < this.points.length; i++)
+		ctx.lineTo(this.points[i].x, this.points[i].y)
+	ctx.closePath()
+	if (f)
+	{
+		ctx.fillStyle = f
+		ctx.fill()
+	}
+	if (s)
+	{
+		ctx.lineWidth = this.margin * 2 + (lwa || 0)
+		ctx.strokeStyle = s
+		ctx.stroke()
+		ctx.lineWidth = 1
+	}
+}
+
+
+
+// GJK
+
+window.GJK_TOLERANCE = 0.0001
+
+function Simplex(pt)
+{
+	this.points = [pt]
+}
+
+Simplex.prototype.testDir = function()
+{
+	return vec2NEG(this.ITD)
+}
+
+Simplex.prototype.closestPoint = function()
+{
+	var p = null
+	var dist = 999999999999999
+	for (var i = 0; i < this.points.length; i++)
+	{
+		const np = this.points[i]
+		const ndist = vec2LENGTH(np)
+		if (dist > ndist)
+		{
+			dist = ndist
+			p = np
+		}
+	}
+	return p
+}
+
+Simplex.prototype.subtractAndRemoveZero = function(v)
+{
+	for (var i = 0; i < this.points.length; i++)
+		this.points[i] = vec2SUB(this.points[i], v)
+	this.points = this.points.filter((p) => Math.abs(p.x) > GJK_TOLERANCE || Math.abs(p.y) > GJK_TOLERANCE)
+}
+
+Simplex.prototype.addPoint = function(pt)
+{
+	this.points.push(pt)
+}
+
+Simplex.prototype.calc2PointITD = function(p0, p1)
+{
+	const T = vec2PERP(vec2NORM(vec2SUB(p1, p0)))
+	this.ITD = vec2MULF(T, vec2DOT(T, p0))
+	return near(this.ITD.x, 0, GJK_TOLERANCE) && near(this.ITD.y, 0, GJK_TOLERANCE)
+}
+
+function vec2DOTSIDE(l0, l1, p) { return vec2DOT(vec2SUB(l1, l0), vec2SUB(p, l0)) }
+function vec2XSIDE(l0, l1, l2, p)
+{
+	const N = vec2PERP(vec2SUB(l1, l0))
+	const m = vec2DOT(N, l0)
+	return (vec2DOT(N, p) - m) * (m - vec2DOT(N, l2))
+}
+
+Simplex.prototype.reduce = function()
+{
+	const O = vec2(0, 0)
+	const PS = this.points
+
+	if (PS.length == 1)
+	{
+		this.ITD = PS[0]
+		return false
+	}
+
+	if (PS.length == 2)
+	{
+		// find which slice the point is in
+		const D = vec2SUB(PS[1], PS[0])
+		const projP = vec2DOT(D, O)
+		const proj0 = vec2DOT(D, PS[0])
+		const proj1 = vec2DOT(D, PS[1])
+		if (projP < proj0) // point 1 no longer useful
+		{
+			PS.pop()
+			this.ITD = PS[0]
+		}
+		else if (projP > proj1) // point 0 no longer useful
+		{
+			PS.shift()
+			this.ITD = PS[0]
+		}
+		else // both points still useful
+		{
+			if (this.calc2PointITD(PS[0], PS[1]))
+				return true
+		}
+		return false
+	}
+
+	if (PS.length == 3)
+	{
+		const e0a = vec2DOTSIDE(PS[0], PS[1], O)
+		const e0b = vec2DOTSIDE(PS[1], PS[0], O)
+		const e1a = vec2DOTSIDE(PS[1], PS[2], O)
+		const e1b = vec2DOTSIDE(PS[2], PS[1], O)
+		const e2a = vec2DOTSIDE(PS[2], PS[0], O)
+		const e2b = vec2DOTSIDE(PS[0], PS[2], O)
+
+		// points
+		if (e0a <= 0 && e2b <= 0) // near point 0
+		{
+			if (near(PS[0].x, O.x, GJK_TOLERANCE) && near(PS[0].y, O.y, GJK_TOLERANCE))
+				return true
+			PS.pop()
+			PS.pop()
+			this.ITD = PS[0]
+			return false
+		}
+		if (e1a <= 0 && e0b <= 0) // near point 1
+		{
+			if (near(PS[1].x, O.x, GJK_TOLERANCE) && near(PS[1].y, O.y, GJK_TOLERANCE))
+				return true
+			PS.pop()
+			PS.shift()
+			this.ITD = PS[0]
+			return false
+		}
+		if (e2a <= 0 && e1b <= 0) // near point 2
+		{
+			if (near(PS[2].x, O.x, GJK_TOLERANCE) && near(PS[2].y, O.y, GJK_TOLERANCE))
+				return true
+			PS.shift()
+			PS.shift()
+			this.ITD = PS[0]
+			return false
+		}
+
+		const side0 = vec2XSIDE(PS[0], PS[1], PS[2], O)
+		const side1 = vec2XSIDE(PS[1], PS[2], PS[0], O)
+		const side2 = vec2XSIDE(PS[2], PS[0], PS[1], O)
+
+		// edges
+		if (e0a >= 0 && e0b >= 0 && side0 >= 0) // in 0-1 edge, keep 0 and 1, replace 2 with pt
+		{
+			if (this.calc2PointITD(PS[0], PS[1]))
+				return true
+			PS.pop()
+			return false
+		}
+		if (e1a >= 0 && e1b >= 0 && side1 >= 0) // in 1-2 edge, push out 0 and add pt
+		{
+			if (this.calc2PointITD(PS[1], PS[2]))
+				return true
+			PS.shift()
+			return false
+		}
+		if (e2a >= 0 && e2b >= 0 && side2 >= 0) // in 2-0 edge, push out 1 and add pt
+		{
+			if (this.calc2PointITD(PS[2], PS[0]))
+				return true
+			PS[1] = PS[2]
+			PS.pop()
+			return false
+		}
+
+		// point in triangle
+		return true
+	}
+
+	throw "invalid point count"
+}
+
+function getShapeRefPoint(s)
+{
+	const s1 = s.getSupport(vec2(1,0))
+	const s2 = s.getSupport(vec2(-1,0))
+	const s3 = s.getSupport(vec2(0,1))
+	const s4 = s.getSupport(vec2(0,-1))
+	return vec2MULF(vec2ADD(vec2ADD(s1, s2), vec2ADD(s3, s4)), 0.25)
+}
+
+Simplex.prototype.draw = function(refshape)
+{
+	const srp = getShapeRefPoint(refshape)
+	dbg_drawPoly(this.points, srp)
+}
+
+function EPA(simplex, cs1, cs2)
+{
+//	console.log("EPA")
+	var poly = simplex.points.slice(0)
+	if (poly.length >= 3 && vec2CROSS(vec2SUB(poly[1], poly[0]), vec2SUB(poly[2], poly[0])) > 0)
+	{
+		// make winding consistent
+		poly[1] = simplex.points[2]
+		poly[2] = simplex.points[1]
+	}
+
+	var ce = null
+	var sup1 = null, sup2 = null, cN = null
+
+	var i = 0
+	var pdist = -1
+	for ( ; i < 20; i++)
+	{
+	//	dbg_drawPoly(poly, getShapeRefPoint(cs2))
+		// find closest edge
+		var cdist = 9999999999
+		var cp0 = null, cp1 = null
+		for (var e = 0; e < poly.length; e++)
+		{
+			const p0 = poly[e]
+			const p1 = poly[(e + 1) % poly.length]
+			const N = vec2NORM(vec2PERP(vec2SUB(p1, p0)))
+			const ndist = vec2DOT(N, p0)
+			if (cdist > ndist)
+			{
+				cdist = ndist
+				ce = e
+				cp0 = p0
+				cp1 = p1
+				cN = N
+			}
+		}
+	//	if (cdist < 0)
+	//		break
+	//	if (cdist < pdist - GJK_TOLERANCE) { throw "[debug] next closest edge is closer? impossible!" } pdist = cdist
+	//	console.log(cdist)
+
+		// look for support point
+		sup1 = cs1.getSupport((cN))
+		sup2 = cs2.getSupport(vec2NEG(cN))
+		dbg_drawPoint(sup1, true)
+		dbg_drawPoint(sup2, true)
+		const newpt = vec2SUB(sup1, sup2)
+	//	console.log("pt/dot/dot", newpt, vec2DOT(cN, cp0), vec2DOT(cN, newpt))
+		if (vec2DOT(cN, cp0) > vec2DOT(cN, newpt) - GJK_TOLERANCE)
+		{
+			// closest side found
+			return { hit: true, dir: cN, dist: Math.abs(vec2DOT(newpt, cN)), epaiter: i + 1, p1: sup1, p2: sup2 }
+		}
+
+		// add point to polygon
+		const npoly = []
+		var adding
+		{
+			const p0 = poly[poly.length - 1]
+			const p1 = poly[0]
+			const N = vec2NORM(vec2PERP(vec2SUB(p1, p0)))
+			adding = vec2DOT(N, newpt) < vec2DOT(N, p0) - GJK_TOLERANCE
+		}
+		for (var e = 0; e < poly.length; e++)
+		{
+			const p0 = poly[e]
+			const p1 = poly[(e + 1) % poly.length]
+			const N = vec2NORM(vec2PERP(vec2SUB(p1, p0)))
+			const nadd = vec2DOT(N, newpt) < vec2DOT(N, p0) - GJK_TOLERANCE
+		//	console.log("padd,cadd", adding, nadd)
+
+			if (adding || nadd)
+				npoly.push(p0)
+			if (!nadd && adding)
+			{
+				npoly.push(newpt)
+				adding = false
+			}
+			else if (nadd && !adding)
+			{
+				adding = true
+			}
+		}
+	//	console.log("poly/npoly", poly, npoly)
+		poly = npoly
+	}
+
+	return { hit: true, dir: cN, dist: Math.abs(vec2DOT(cp0, cN)), epaiter: i, p1: sup1, p2: sup2 }
+}
+
+function GJK(cs1, cs2)
+{
+	var supD = vec2(1, 0)
+	var sup1 = cs1.getSupport(supD)
+	var sup2 = cs2.getSupport(vec2NEG(supD))
+	dbg_drawPoint(sup1)
+	dbg_drawPoint(sup2)
+	const simplex = new Simplex(vec2SUB(sup1, sup2))
+
+	var i = 0
+	for ( ; i < 20; i++) // don't test for too long
+	{
+		simplex.draw(cs2)
+		if (simplex.reduce())
+		{
+			// origin in simplex
+			// find closest exit direction and penetration
+			const epa = EPA(simplex, cs1, cs2)
+			if (epa.hit)
+			{
+				epa.gjkiter = i + 1
+				return epa
+			}
+			return { hit: true, dir: supD, dist: 0, gjkiter: i + 1, epaiter: epa.epaiter, p1: sup1, p2: sup2 }
+		}
+
+		const testDir = simplex.testDir()
+	//	if (near(testDir.x, 0, GJK_TOLERANCE) && near(testDir.y, 0, GJK_TOLERANCE))
+	//		throw "BAD TEST DIR"
+		supD = vec2NORM(testDir)
+		sup1 = cs1.getSupport(supD)
+		sup2 = cs2.getSupport(vec2NEG(supD))
+		dbg_drawPoint(sup1)
+		dbg_drawPoint(sup2)
+
+		const newpt = vec2SUB(sup1, sup2)
+	//	console.log(testDir, supD, newpt)
+		if (vec2LENGTH(testDir) < -vec2DOT(supD, newpt) + GJK_TOLERANCE)
+		{
+			// separating axis found
+			return { hit: false, dir: supD, dist: vec2LENGTH(testDir), gjkiter: i + 1, epaiter: 0, p1: sup1, p2: sup2 }
+		}
+
+		simplex.addPoint(newpt)
+	}
+
+	// ran out of time, return best effort
+	return { hit: false, dir: supD, dist: vec2LENGTH(simplex.testDir()), gjkiter: i, epaiter: 0, p1: sup1, p2: sup2 }
+}
+
+// disabling function, for debugging purposes
+function NOGJK(cs1, cs2)
+{
+	return { hit: false, dist: -1, gjkiter: -1, epaiter: -1, p1: vec2(-1,-1), p2: vec2(-1,-1) }
+}
+
+
+
+function drawArrow(style, p0, p1)
+{
+	ctx.strokeStyle = style
+	ctx.beginPath()
+	ctx.moveTo(p0.x, p0.y)
+	ctx.lineTo(p1.x, p1.y)
+	ctx.stroke()
+
+	const N = vec2NORM(vec2SUB(p1, p0))
+	ctx.fillStyle = style
+	ctx.moveTo(p1.x, p1.y)
+	ctx.lineTo(p1.x - N.x * 4 - N.y * 2, p1.y - N.y * 4 + N.x * 2)
+	ctx.lineTo(p1.x - N.x * 4 + N.y * 2, p1.y - N.y * 4 - N.x * 2)
+	ctx.closePath()
+	ctx.fill()
+}
+
+function drawArrowD(style, p0, d, s)
+{
+	drawArrow(style, p0, vec2ADD(p0, vec2MULF(d, s)))
+}
+
+// separation/penetration rendering
+function drawSePe(res, cs1, cs2)
+{
+	var T = vec2NORM(vec2PERP(res.dir))
+	if (T.y > 0)
+		T = vec2NEG(T)
+	const ts1 = vec2DOT(cs1.getSupport(T), T)
+	const ts2 = vec2DOT(cs2.getSupport(T), T)
+	const ts = (ts1 > ts2 ? ts1 : ts2) + 5
+	const p1R = vec2ADD(res.p1, vec2MULF(T, ts - vec2DOT(T, res.p1)))
+	const p2R = vec2ADD(res.p2, vec2MULF(T, ts - vec2DOT(T, res.p2)))
+
+	ctx.strokeStyle = res.hit ? "rgba(200,20,0,0.6)" : "rgba(100,100,100,0.3)"
+	ctx.beginPath()
+	ctx.moveTo(res.p1.x, res.p1.y)
+	ctx.lineTo(p1R.x, p1R.y)
+	ctx.lineTo(p2R.x, p2R.y)
+	ctx.lineTo(res.p2.x, res.p2.y)
+	ctx.stroke()
+}
+
+function redraw()
+{
+	const canvas = el("preview")
+	const ctx = canvas.getContext("2d")
+	window.ctx = ctx
+	ctx.clearRect(0, 0, 640, 480)
+	ctx.strokeStyle = "rgba(0,0,0,1)"
+
+	const convex1 = new ConvexPoly
+	([
+		vec2(200,100),
+		vec2(240,100),
+		vec2(240,140),
+		vec2(200,140),
+	])
+	const convex2 = new Sphere(500, 200, 30)
+	const convex3 = new ConvexPoly
+	([
+		vec2(100,300),
+		vec2(280,300),
+		vec2(300,320),
+		vec2(280,340),
+		vec2(100,340),
+	], 10)
+	const cursorPoly = new ConvexPoly
+	([
+		vec2(gjktest.tstx - 10, gjktest.tsty),
+		vec2(gjktest.tstx, gjktest.tsty - 10),
+		vec2(gjktest.tstx + 10, gjktest.tsty),
+		vec2(gjktest.tstx, gjktest.tsty + 10),
+	])
+	const cursor = new Sphere(gjktest.tstx, gjktest.tsty, 5)
+
+	convex1.draw("rgba(230,220,10,0.5)", "rgba(230,220,10)")
+	convex2.draw("rgba(130,220,10,0.5)", "rgba(130,220,10)")
+	convex3.draw("rgba(220,110,130,0.5)", "rgba(220,110,130)")
+	cursorPoly.draw("rgba(10,220,230,0.5)", "rgba(10,220,230)")
+
+	const res1 = GJK(convex1, cursorPoly)
+	const res2 = GJK(convex2, cursorPoly)
+	const res3 = GJK(convex3, cursorPoly)
+
+	drawSePe(res1, convex1, cursorPoly)
+	drawSePe(res2, convex2, cursorPoly)
+	drawSePe(res3, convex3, cursorPoly)
+
+	if (res1.hit)
+	{
+		convex1.draw(null, "rgba(230,220,10,0.2)", 10)
+	}
+	else
+	{
+	//	drawArrowD("rgba(230,220,10,0.5)", res1.p1, res1.dir, res1.dist)
+	//	drawArrowD("rgba(230,220,10,0.5)", res1.p2, vec2NEG(res1.dir), res1.dist)
+	}
+	if (res2.hit)
+	{
+		convex2.draw(null, "rgba(130,220,10,0.2)", 10)
+	}
+	else
+	{
+	//	drawArrowD("rgba(130,220,10,0.5)", res2.p1, res2.dir, res2.dist)
+	//	drawArrowD("rgba(130,220,10,0.5)", res2.p2, vec2NEG(res2.dir), res2.dist)
+	}
+	if (res3.hit)
+	{
+		convex3.draw(null, "rgba(220,110,130,0.2)", 10)
+	}
+	else
+	{
+	//	drawArrowD("rgba(220,110,130,0.5)", res3.p1, res3.dir, res3.dist)
+	//	drawArrowD("rgba(220,110,130,0.5)", res3.p2, vec2NEG(res3.dir), res3.dist)
+	}
+
+//	ctx.strokeStyle = res1.hit ? "rgba(230,220,10,0.5)" : "rgba(230,220,10,0.2)"
+//	ctx.beginPath()
+//	ctx.moveTo(res1.p1.x, res1.p1.y)
+//	ctx.lineTo(res1.p2.x, res1.p2.y)
+//	ctx.stroke()
+
+//	ctx.strokeStyle = res2.hit ? "rgba(130,220,10,0.5)" : "rgba(130,220,10,0.2)"
+//	ctx.beginPath()
+//	ctx.moveTo(res2.p1.x, res2.p1.y)
+//	ctx.lineTo(res2.p2.x, res2.p2.y)
+//	ctx.stroke()
+
+//	ctx.strokeStyle = res3.hit ? "rgba(220,110,130,0.5)" : "rgba(220,110,130,0.2)"
+//	ctx.beginPath()
+//	ctx.moveTo(res3.p1.x, res3.p1.y)
+//	ctx.lineTo(res3.p2.x, res3.p2.y)
+//	ctx.stroke()
+
+	ctx.fillStyle = "rgba(0,0,0,0.8)"
+	ctx.beginPath()
+	ctx.moveTo(0, 0)
+	ctx.lineTo(180, 0)
+	ctx.lineTo(210, 60)
+	ctx.lineTo(0, 40)
+	ctx.closePath()
+	ctx.fill()
+	ctx.fillStyle = "rgba(0,0,0,0.5)"
+	ctx.beginPath()
+	ctx.moveTo(0, 40)
+	ctx.lineTo(210, 60)
+	ctx.lineTo(200, 70)
+	ctx.lineTo(0, 50)
+	ctx.closePath()
+	ctx.fill()
+
+	ctx.textAlign = "left"
+	ctx.textBaseline = "top"
+	ctx.fillStyle = "rgba(230,220,10)"
+	ctx.fillText(`#1 iterations: ${res1.gjkiter}/${res1.epaiter}`, 0, 0)
+	ctx.fillText(`distance: ${res1.dist.toFixed(2)}`, 100, 0)
+	ctx.fillStyle = "rgba(130,220,10)"
+	ctx.fillText(`#2 iterations: ${res2.gjkiter}/${res2.epaiter}`, 0, 12)
+	ctx.fillText(`distance: ${res2.dist.toFixed(2)}`, 100, 12)
+	ctx.fillStyle = "rgba(220,110,130)"
+	ctx.fillText(`#3 iterations: ${res1.gjkiter}/${res1.epaiter}`, 0, 24)
+	ctx.fillText(`distance: ${res1.dist.toFixed(2)}`, 100, 24)
+}
+
+function update()
+{
+	redraw()
+}
+
+window.gjktest = { tstx: 0, tsty: 0 }
+
+update()
+	</script>
+</body>
